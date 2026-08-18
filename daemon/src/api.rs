@@ -53,6 +53,7 @@ pub async fn serve(cfg: Arc<Config>, store: Arc<Store>, events: Events) -> Resul
         .route("/api/snapshot", get(snapshot))
         .route("/api/stream", get(stream))
         .route("/api/sessions", get(sessions))
+        .route("/api/summaries", get(summaries))
         .route("/api/summary/{harness}/{session_id}", get(summary))
         .route("/api/health", get(health))
         .fallback_service(ServeDir::new(&web_dir).append_index_html_on_directories(true))
@@ -168,6 +169,31 @@ async fn sessions(
     let limit = q.limit.unwrap_or(20).clamp(1, 100);
     let since_ms = q.since_ms.unwrap_or_else(|| now_ms() - 24 * 3600 * 1000);
     Ok(Json(api.store.recent_sessions(limit, since_ms)?).into_response())
+}
+
+#[derive(Deserialize)]
+struct SummariesQuery {
+    /// Where the previous page ended. Absent means start at the newest.
+    before_ms: Option<i64>,
+    harness: Option<String>,
+    limit: Option<i64>,
+}
+
+/// One page of summaries, for the list the panel opens when the card is too
+/// small to hold them -- which it always is.
+async fn summaries(
+    State(api): State<Api>,
+    Query(q): Query<SummariesQuery>,
+) -> Result<Response, ApiError> {
+    let limit = q.limit.unwrap_or(30).clamp(1, 200);
+    let before_ms = q.before_ms.unwrap_or(i64::MAX);
+    let harness = q.harness.as_deref().filter(|h| !h.is_empty() && *h != "all");
+    // Asked for one more than the page, so "is there another page" is answered
+    // by the same query instead of a second count over the whole table.
+    let mut rows = api.store.summaries_before(before_ms, harness, limit + 1)?;
+    let has_more = rows.len() as i64 > limit;
+    rows.truncate(limit as usize);
+    Ok(Json(json!({ "summaries": rows, "has_more": has_more })).into_response())
 }
 
 async fn summary(

@@ -130,6 +130,22 @@ html, body {
 }
 .more { font-size: 10px; color: var(--muted); }
 
+.hgroup { display: flex; align-items: center; gap: 7px; }
+/* The way to the other summaries. It reads as a control rather than a label
+   because the card holds three of twenty-four and nothing else says so. */
+.all {
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: .04em;
+  color: var(--blue);
+  background: none;
+  border: 1px solid rgba(85, 168, 255, .32);
+  border-radius: 3px;
+  padding: 1px 5px;
+  cursor: pointer;
+}
+.all:hover { background: rgba(85, 168, 255, .12); }
+
 .rows {
   flex: 1;
   min-height: 0;
@@ -441,6 +457,13 @@ html, body {
 /* only when the card is tall enough to afford it — set in strip.js */
 .rows:not(.rich) .sum .body { display: none; }
 
+/* The one card whose content is unbounded: summaries keep arriving and the
+   window is 350px tall. It scrolls; everything else still truncates by count. */
+#summaries { overflow-y: auto; overscroll-behavior: contain; }
+#summaries::-webkit-scrollbar { width: 5px; }
+#summaries::-webkit-scrollbar-thumb { background: var(--track); border-radius: 3px; }
+#summaries::-webkit-scrollbar-thumb:hover { background: var(--rule); }
+
 .conn {
   width: 7px;
   height: 7px;
@@ -581,3 +604,82 @@ html, body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* --- the full summary list ------------------------------------------ */
+
+/* Under the detail card, which is z-index 10: opening a summary from here
+   layers on top instead of replacing what you were reading. */
+.list { z-index: 9; align-items: stretch; padding: 0; }
+
+.ls-card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 0;
+  padding: 8px 12px 10px;
+  /* Clears the 26px native drag band at the top of the window, the same reason
+     the detail card's close button does. */
+  padding-top: 30px;
+}
+
+.ls-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--rule);
+}
+.ls-title {
+  font-size: 10px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.ls-filters { display: flex; gap: 4px; }
+.chip {
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: .04em;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+.chip:hover { color: var(--fg2); }
+.chip.on { color: var(--blue); border-color: rgba(85, 168, 255, .45); }
+.ls-count { margin-left: auto; font-size: 10px; color: var(--dim); }
+#ls-close {
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+#ls-close:hover { color: var(--fg); border-color: var(--fg2); }
+
+/* Two columns where the window is wide: at 1080px a one-column list of 40px
+   rows shows six of two hundred, which is barely better than the card. */
+.ls-rows {
+  flex: 1;
+  min-height: 0;
+  margin-top: 7px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-auto-rows: min-content;
+  gap: 6px 10px;
+  align-content: start;
+}
+.ls-rows::-webkit-scrollbar { width: 6px; }
+.ls-rows::-webkit-scrollbar-thumb { background: var(--track); border-radius: 3px; }
+.ls-rows .sum { padding: 5px 7px; border-radius: 5px; background: var(--card); }
+.ls-rows .sum:hover { background: var(--card-hi); }
+.ls-rows .sum .body { display: block; }

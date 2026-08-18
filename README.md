@@ -27,6 +27,8 @@ Click any summary to see what that agent actually did:
   [models.dev](https://models.dev).
 - **Summaries** — when a session ends, its transcript is summarised into four
   lines: what it was about, what was done, how it turned out, what is left for you.
+  The card scrolls; **All** opens the full history, filtered by harness and paged
+  as you scroll.
 - **Filed with your second brain** — if you run the
   [DSH brain](https://github.com/), each of those summaries is also offered to its
   local capture API, where it waits in the inbox for you to keep or discard. The

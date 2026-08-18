@@ -30,7 +30,13 @@
   </section>
 
   <section class="region r-summaries">
-    <header><span class="rlabel">summaries</span><span id="conn" class="conn" title="connecting"></span></header>
+    <header>
+      <span class="rlabel">summaries</span>
+      <span class="hgroup">
+        <button id="all" type="button" class="all" title="每一条总结">全部</button>
+        <span id="conn" class="conn" title="connecting"></span>
+      </span>
+    </header>
     <div id="summaries" class="rows"></div>
   </section>
 
@@ -51,6 +57,20 @@
   </div>
   <div id="ov-body" class="ov-body"></div>
   <div id="ov-meta" class="ov-meta"></div>
+ </div>
+</div>
+
+<!-- Every summary there is. Sits under the detail overlay, so opening one from
+     here layers rather than replaces. -->
+<div id="list" class="overlay list" hidden>
+ <div class="ls-card">
+  <div class="ls-head">
+    <span class="ls-title">summaries</span>
+    <span id="ls-filters" class="ls-filters"></span>
+    <span id="ls-count" class="ls-count"></span>
+    <button id="ls-close" type="button" title="close">&#10005;</button>
+  </div>
+  <div id="ls-rows" class="ls-rows"></div>
  </div>
 </div>
 

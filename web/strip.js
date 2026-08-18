@@ -14,6 +14,7 @@ let pollTimer = null;
 let retryTimer = null;
 let backoff = 1000;
 let relayout = 0;
+let sumSig = '';
 
 // --- formatting -------------------------------------------------------
 
@@ -284,38 +285,52 @@ function renderToday(today) {
   box.appendChild(foot);
 }
 
+/** One summary, as a clickable row. Shared by the card and the full list. */
+function summaryRow(s, rich) {
+  const item = el('div', 'sum');
+  const meta = el('div', 'meta');
+  meta.appendChild(el('span', null, s.project || s.harness));
+  const ago = el('span');
+  ago.dataset.since = s.created_at_ms;
+  meta.appendChild(ago);
+  item.appendChild(meta);
+  const head = el('div', 'head', s.headline);
+  head.title = s.headline;
+  item.appendChild(head);
+  if (rich && s.body) {
+    const p = preview(s.body);
+    if (p) item.appendChild(el('div', 'body', p));
+  }
+  item.addEventListener('click', () => openOverlay(s));
+  return item;
+}
+
 function renderSummaries(summaries) {
   const box = $('summaries');
+  // Show the summary body too, but only if doing so still leaves room for two.
+  // Measured before the rebuild: the card's height is set by the layout, not by
+  // what is currently inside it.
+  const rich = fits(box, ROW.sumRich, CAP.sum) >= 2;
+
+  // Now that the card scrolls, rebuilding it on every snapshot would throw the
+  // reader back to the top -- and snapshots arrive whenever any agent so much as
+  // changes state. Most of them do not touch this list, so leave it alone.
+  // Ages stay fresh regardless: tick() rewrites them in place.
+  const sig = rich + '|' + summaries.map((s) => s.harness + s.session_id + s.created_at_ms).join(',');
+  if (sig === sumSig) return;
+  sumSig = sig;
+
   box.textContent = '';
-  box.classList.remove('rich');
+  box.classList.toggle('rich', rich);
   if (!summaries.length) {
     box.appendChild(el('div', 'empty', 'no recent summaries'));
     return;
   }
 
-  // Show the summary body too, but only if doing so still leaves room for two.
-  const rich = fits(box, ROW.sumRich, CAP.sum) >= 2;
-  if (rich) box.classList.add('rich');
-  const n = fits(box, rich ? ROW.sumRich : ROW.sum, CAP.sum);
-
-  for (const s of summaries.slice(0, n)) {
-    const item = el('div', 'sum');
-    const meta = el('div', 'meta');
-    meta.appendChild(el('span', null, s.project || s.harness));
-    const ago = el('span');
-    ago.dataset.since = s.created_at_ms;
-    meta.appendChild(ago);
-    item.appendChild(meta);
-    const head = el('div', 'head', s.headline);
-    head.title = s.headline;
-    item.appendChild(head);
-    if (rich && s.body) {
-      const p = preview(s.body);
-      if (p) item.appendChild(el('div', 'body', p));
-    }
-    item.addEventListener('click', () => openOverlay(s));
-    box.appendChild(item);
-  }
+  // Every one the snapshot carries, not the two that fit: the card scrolls now.
+  // Truncating here is what made everything past the second row unreachable --
+  // there was no "more" affordance and no way to scroll to it either.
+  for (const s of summaries) box.appendChild(summaryRow(s, rich));
 }
 
 /** Relative times move on their own clock, not on the server's. */
@@ -366,6 +381,66 @@ function openOverlay(s) {
 
 function closeOverlay() {
   $('overlay').hidden = true;
+}
+
+// --- the full list ----------------------------------------------------
+
+const HARNESSES = ['all', 'claude', 'codex', 'dsh'];
+let list = { harness: 'all', before: null, more: false, loading: false, gen: 0 };
+
+/** Fetches one page and appends it. `reset` starts the list over, which is what
+    a filter change means.
+
+    `gen` is what makes a filter change safe while a page is still in the air: a
+    reset always goes ahead, and the page it overtook drops its rows on arrival
+    instead of pasting the old harness under the new chip. */
+function loadPage(reset) {
+  if (list.loading && !reset) return;
+  if (reset) { list.gen++; list.before = null; $('ls-rows').textContent = ''; }
+  const gen = list.gen;
+  list.loading = true;
+
+  const q = new URLSearchParams({ limit: '30' });
+  if (list.before !== null) q.set('before_ms', String(list.before));
+  if (list.harness !== 'all') q.set('harness', list.harness);
+
+  fetch('/api/summaries?' + q)
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+    .then((d) => {
+      if (gen !== list.gen) return;
+      const rows = $('ls-rows');
+      for (const s of d.summaries) {
+        rows.appendChild(summaryRow(s, true));
+        list.before = s.created_at_ms;
+      }
+      list.more = d.has_more;
+      if (!rows.childElementCount) rows.appendChild(el('div', 'empty', '这个筛选下没有总结'));
+      $('ls-count').textContent = rows.querySelectorAll('.sum').length + (d.has_more ? '+' : '');
+      list.loading = false;
+      tick();
+    })
+    .catch(() => {
+      if (gen !== list.gen) return;
+      list.loading = false;
+      $('ls-count').textContent = '读不到';
+    });
+}
+
+function openList() {
+  const bar = $('ls-filters');
+  bar.textContent = '';
+  for (const h of HARNESSES) {
+    const chip = el('button', 'chip' + (h === list.harness ? ' on' : ''), h);
+    chip.type = 'button';
+    chip.addEventListener('click', () => { list.harness = h; openList(); });
+    bar.appendChild(chip);
+  }
+  $('list').hidden = false;
+  loadPage(true);
+}
+
+function closeList() {
+  $('list').hidden = true;
 }
 
 // --- transport --------------------------------------------------------
@@ -431,7 +506,25 @@ function dropped() {
 $('ov-close').addEventListener('click', closeOverlay);
 // clicking the backdrop closes as well, so a missed 26px button is not a trap
 $('overlay').addEventListener('click', (e) => { if (e.target.id === 'overlay') closeOverlay(); });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeOverlay(); });
+
+$('all').addEventListener('click', openList);
+$('ls-close').addEventListener('click', closeList);
+$('list').addEventListener('click', (e) => { if (e.target.id === 'list') closeList(); });
+
+// Near the bottom, fetch the next page. The window is short, so a page is only
+// a few screens and waiting for the very last pixel would read as an end.
+$('ls-rows').addEventListener('scroll', (e) => {
+  const b = e.target;
+  if (list.more && b.scrollHeight - b.scrollTop - b.clientHeight < 120) loadPage(false);
+});
+
+// Escape peels one layer at a time: the detail card opens on top of the list,
+// and closing both at once would lose the reader's place in it.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (!$('overlay').hidden) closeOverlay();
+  else closeList();
+});
 
 /* The window is resizable, so row counts are only valid until the next drag.
    Coalesce to one re-render per frame — a resize drag fires continuously. */
