@@ -330,6 +330,21 @@ WHERE excluded.sampled_at_ms >= quota.sampled_at_ms
         Ok(written > 0)
     }
 
+    /// Distinct models this machine has logged tokens against in the last
+    /// `days`. The price-gap report reads it so the warning names models
+    /// somebody here actually runs.
+    pub fn models_seen(&self, days: i64) -> Result<Vec<String>> {
+        let since = now_ms() - days * 86_400_000;
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT model FROM usage_delta
+              WHERE model IS NOT NULL AND model <> '' AND at_ms >= ?1
+              ORDER BY model",
+        )?;
+        let rows = stmt.query_map(params![since], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     pub fn put_prices(&self, prices: &[(String, Price)]) -> Result<usize> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;

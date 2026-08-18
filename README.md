@@ -53,15 +53,15 @@ read-only.
    human turns and the agent's text replies, **not** tool arguments, tool output or
    file contents. Everything is passed through `daemon/src/redact.rs` first
    (API keys, tokens, JWTs, private keys, high-entropy blobs) and truncated to
-   24 000 characters. Turn it off with `AGENT_MONITOR_SUMMARIZE=0`.
+   24 000 characters. Turn it off with `summarize = false`.
 2. `api.deepseek.com/user/balance` — your DeepSeek balance. Off with
-   `AGENT_MONITOR_DEEPSEEK_BALANCE=0`.
+   `deepseek_balance = false`.
 3. `models.dev` — the public price table. No data of yours goes with the request.
 
 **Both DeepSeek calls are on by default.** If you do not want any transcript text
-leaving the machine, start the daemon with
-`AGENT_MONITOR_SUMMARIZE=0 AGENT_MONITOR_DEEPSEEK_BALANCE=0` and everything except
-the summaries column still works.
+leaving the machine, put `summarize = false` and `deepseek_balance = false` in
+`~/.agent-monitor/config.toml` and everything except the summaries column still
+works. Neither call happens at all without a key.
 
 The HTTP server binds `127.0.0.1` only.
 
@@ -97,30 +97,55 @@ cd strip && xcodegen && xcodebuild -scheme AgentMonitorStrip -configuration Rele
 open build/Build/Products/Release/AgentMonitorStrip.app
 ```
 
-Then drag the window's top edge to move it, any edge to resize. Position and size
-are remembered. Details in [`strip/README.md`](strip/README.md).
+Then drag the window's top edge to move it, any edge to resize, and double-click
+that top edge to snap it flush to the bottom of the screen at full width. Position
+and size are remembered. Details in [`strip/README.md`](strip/README.md).
 
-For a summary column you also need a DeepSeek key, read in this order:
-`DEEPSEEK_API_KEY` → `~/.dsh/.credentials.yaml` → `~/.hermes/.env`.
+Nothing else is required. Run only Claude Code, or only Codex, or neither —
+whatever is absent stays absent, and the daemon says so once instead of treating
+it as a fault. For a summary column you also need a DeepSeek key (below).
 
 ## Configuration
 
-Everything is an environment variable; there is no config file.
+The first run writes a commented `~/.agent-monitor/config.toml` listing every
+setting at its default. Edit it and restart. An environment variable of the same
+name, upper-cased and prefixed `AGENT_MONITOR_`, overrides the file — useful for
+one-off runs, but note that launching the panel with `open` carries no
+environment, so the file is the only configuration that reaches it.
 
-| variable | default | |
+| setting | default | |
 |---|---|---|
-| `AGENT_MONITOR_PORT` | `39917` | HTTP + SSE port, bound to `127.0.0.1` |
-| `AGENT_MONITOR_HOME` | `~/.agent-monitor` | where `monitor.sqlite` lives |
-| `AGENT_MONITOR_SUMMARIZE` | `1` | `0` disables all summary requests |
-| `AGENT_MONITOR_DEEPSEEK_BALANCE` | `1` | `0` disables the balance lookup |
-| `AGENT_MONITOR_SUMMARY_MODEL` | `deepseek-v4-flash` | |
-| `AGENT_MONITOR_SUMMARY_BASE_URL` | `https://api.deepseek.com` | point it at any OpenAI-compatible endpoint |
-| `AGENT_MONITOR_SUMMARY_MAX_CHARS` | `24000` | transcript budget per summary |
-| `AGENT_MONITOR_LIVE_POLL_MS` | `2000` | herdr poll |
-| `AGENT_MONITOR_SCAN_POLL_MS` | `15000` | transcript rescan |
-| `AGENT_MONITOR_QUOTA_POLL_MS` | `60000` | quota refresh |
-| `AGENT_MONITOR_STALE_AFTER_MS` | `120000` | when a quiet agent counts as idle |
-| `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `DSH_HOME`, `HERDR_SOCKET_PATH` | standard | override where each harness is read from |
+| `port` | `39917` | HTTP + SSE port, bound to `127.0.0.1` |
+| `summarize` | `true` | `false` disables all summary requests |
+| `deepseek_balance` | `true` | `false` disables the balance lookup |
+| `deepseek_key_file` | — | a file containing the key, and nothing else |
+| `summary_model` | `deepseek-v4-flash` | |
+| `summary_base_url` | `https://api.deepseek.com` | point it at any OpenAI-compatible endpoint |
+| `summary_max_chars` | `24000` | transcript budget per summary |
+| `live_poll_ms` | `2000` | process liveness |
+| `scan_poll_ms` | `15000` | transcript rescan |
+| `quota_poll_ms` | `60000` | quota refresh |
+| `stale_after_ms` | `120000` | when a quiet agent counts as idle |
+| `claude_home` | `~/.claude` | where each harness is read from; a missing one is |
+| `codex_home` | `~/.codex` | not an error, just an empty column |
+| `dsh_home` | `~/.dsh` | |
+| `herdr_socket` | `~/.config/herdr/herdr.sock` | |
+| `web_dir` | found automatically | the panel's static files |
+| `pricing_seed` | — | a models.dev snapshot to price from before the first network refresh |
+
+`AGENT_MONITOR_HOME` (environment only) moves the whole data directory,
+config file included.
+
+### The DeepSeek key
+
+Looked for in this order, first hit wins:
+
+1. the `DEEPSEEK_API_KEY` environment variable
+2. the file named by `deepseek_key_file` — bare key, or a `DEEPSEEK_API_KEY=…` line
+3. `~/.dsh/.credentials.yaml`, then `~/.hermes/.env`, if you happen to run those
+
+Option 2 is the portable one. `chmod 600` it. With no key, summaries and the
+balance row are simply absent and nothing is sent anywhere.
 
 ## Layout
 
