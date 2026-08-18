@@ -25,9 +25,15 @@ Click any summary to see what that agent actually did:
   [models.dev](https://models.dev).
 - **Summaries** — when a session ends, its transcript is summarised into four
   lines: what it was about, what was done, how it turned out, what is left for you.
+- **Filed with your second brain** — if you run the
+  [DSH brain](https://github.com/), each of those summaries is also offered to its
+  local capture API, where it waits in the inbox for you to keep or discard. The
+  brain's own hook only sees Claude Code; this sees Codex, herdr and DSH too.
 
-It is **read-only**. It never writes to `~/.claude`, `~/.codex` or `~/.dsh`, never
-sends a mutating command to herdr, and cannot start, stop or steer an agent.
+It reads your agents; it never steers them. Nothing is written to `~/.claude`,
+`~/.codex` or `~/.dsh`, no mutating command is sent to herdr, and it cannot start
+or stop an agent. The one thing it writes anywhere is a capture offered to the DSH
+brain on loopback, and only if you run one — see below.
 
 ## What it reads, and what leaves your machine
 
@@ -44,8 +50,10 @@ before running it.
 | `~/.dsh/sessions/**` | DSH sessions |
 | `~/.config/herdr/herdr.sock` | which agents are live right now |
 
-Credential files are never opened. Other processes' SQLite databases are opened
-read-only.
+Other processes' SQLite databases are opened read-only. One credential file is
+opened — `~/.dsh/brain-http.env`, for the capture-scoped token that authenticates
+to the brain on `127.0.0.1`. That value is never logged and never sent anywhere
+else; set `brain_capture = false` and it is not read at all.
 
 **Sent off your machine — three destinations, all optional:**
 
@@ -57,6 +65,9 @@ read-only.
 2. `api.deepseek.com/user/balance` — your DeepSeek balance. Off with
    `deepseek_balance = false`.
 3. `models.dev` — the public price table. No data of yours goes with the request.
+
+The DSH brain is **not** one of these: it lives on `127.0.0.1` and what goes to it
+never leaves the machine.
 
 **Both DeepSeek calls are on by default.** If you do not want any transcript text
 leaving the machine, put `summarize = false` and `deepseek_balance = false` in
@@ -130,6 +141,9 @@ environment, so the file is the only configuration that reaches it.
 | `codex_home` | `~/.codex` | not an error, just an empty column |
 | `dsh_home` | `~/.dsh` | |
 | `herdr_socket` | `~/.config/herdr/herdr.sock` | |
+| `brain_capture` | `true` | offer finished summaries to the DSH brain; inert without a token |
+| `brain_url` | `http://127.0.0.1:43128` | the brain's local capture API |
+| `brain_token_file` | `~/.dsh/brain-http.env` | where the brain writes its capture token |
 | `web_dir` | found automatically | the panel's static files |
 | `pricing_seed` | — | a models.dev snapshot to price from before the first network refresh |
 
@@ -146,6 +160,39 @@ Looked for in this order, first hit wins:
 
 Option 2 is the portable one. `chmod 600` it. With no key, summaries and the
 balance row are simply absent and nothing is sent anywhere.
+
+### The DSH brain channel
+
+The [brain](https://github.com/) is a local-first second brain inside DeepSeek
+Harness. It watches Claude Code through a `Stop` hook — but a hook only fires
+where it is installed, so sessions under herdr, under Codex, or on a machine
+where it was never wired up leave no trace in it. This daemon has already read
+those transcripts and had a summary written for them.
+
+So when a session ends, the same four lines the panel shows are `POST`ed to the
+brain's capture API with the facts hooks cannot know — span, turns, tokens, cost:
+
+```text
+做了什么：重构切入不抢跑、历史回填零调用、等待态去红
+结果：验收全过，跨回合回填成功，三文件已提交
+待办：无
+
+— codex · ths-harness · 37m · 1 轮 · 19.8M tokens · $12.83
+```
+
+Three things are deliberate:
+
+- **Inbox, never the vault.** Every capture carries `candidate: true` and
+  `authority: agent_inferred`. These are a model's reading of a transcript; the
+  brain keeps saving separate from remembering, and a machine-written claim is
+  exactly the kind that should have to earn its place.
+- **Top-level sessions only.** A fan-out is one piece of work. Its subagents'
+  summaries describe steps inside it, not things you did.
+- **Idempotent.** Each capture is keyed `pitwall/session/<harness>/<id>`, so a
+  restart, a re-scan, or a rewritten summary never produces a second memory.
+
+Without a capture token nothing is sent and nothing is logged: on a machine
+without the brain this feature does not exist.
 
 ## Layout
 

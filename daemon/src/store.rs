@@ -435,6 +435,63 @@ ON CONFLICT(harness, session_id) DO UPDATE SET
         Ok(())
     }
 
+    // -- the DSH brain --------------------------------------------------
+
+    /// Finished sessions whose summary has not yet been offered to the brain.
+    ///
+    /// Only roots: a fan-out is one piece of work, and its subagents' summaries
+    /// describe steps inside it, not things the user did. `skipped` summaries
+    /// are excluded too -- "(内容过少，未总结)" is not a memory.
+    pub fn uncaptured_summaries(&self, limit: i64) -> Result<Vec<CaptureCandidate>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            r#"
+SELECT m.harness, m.session_id, m.headline, m.body, m.created_at_ms,
+       s.project, s.cwd, s.started_at_ms, s.ended_at_ms, s.turns,
+       s.tok_input + s.tok_output + s.tok_cache_read + s.tok_cache_create AS tok_total,
+       s.cost_usd
+FROM summary m
+JOIN session s ON s.harness = m.harness AND s.session_id = m.session_id
+LEFT JOIN brain_capture b ON b.key = 'pitwall/session/' || m.harness || '/' || m.session_id
+WHERE m.status = 'ok' AND COALESCE(s.depth, 0) = 0 AND b.key IS NULL
+ORDER BY m.created_at_ms DESC LIMIT ?1
+"#,
+        )?;
+        let rows = stmt
+            .query_map(params![limit], |r| {
+                Ok(CaptureCandidate {
+                    harness: r.get(0)?,
+                    session_id: r.get(1)?,
+                    headline: r.get(2)?,
+                    body: r.get(3)?,
+                    created_at_ms: r.get(4)?,
+                    project: r.get(5)?,
+                    cwd: r.get(6)?,
+                    started_at_ms: r.get(7)?,
+                    ended_at_ms: r.get(8)?,
+                    turns: r.get(9)?,
+                    tok_total: r.get(10)?,
+                    cost_usd: r.get(11)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Records that one key has been dealt with, whatever the vault said about
+    /// it. A rejected capture is recorded too: retrying a payload the brain has
+    /// already refused just produces the same refusal every fifteen seconds.
+    pub fn mark_captured(&self, key: &str, memory_id: Option<&str>, outcome: &str) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO brain_capture (key, memory_id, outcome, at_ms) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(key) DO UPDATE SET memory_id = excluded.memory_id,
+                                            outcome = excluded.outcome, at_ms = excluded.at_ms",
+            params![key, memory_id, outcome, now_ms()],
+        )?;
+        Ok(())
+    }
+
     // -- watermarks -----------------------------------------------------
 
     pub fn watermark(&self, key: &str) -> Result<Option<String>> {

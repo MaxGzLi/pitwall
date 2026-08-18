@@ -208,6 +208,24 @@ pub struct AgentRow {
     pub herdr_status: Option<String>,
 }
 
+/// A finished session, with everything the brain needs to file it: the summary
+/// that was written for the panel, plus the measured facts around it.
+#[derive(Debug, Clone)]
+pub struct CaptureCandidate {
+    pub harness: String,
+    pub session_id: String,
+    pub headline: String,
+    pub body: Option<String>,
+    pub created_at_ms: i64,
+    pub project: Option<String>,
+    pub cwd: Option<String>,
+    pub started_at_ms: i64,
+    pub ended_at_ms: Option<i64>,
+    pub turns: i64,
+    pub tok_total: i64,
+    pub cost_usd: f64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SummaryRow {
     pub harness: String,
@@ -244,6 +262,14 @@ pub struct Snapshot {
 
 pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
+}
+
+/// RFC 3339 in UTC, which is the only timestamp format the brain's capture
+/// schema accepts.
+pub fn iso(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .unwrap_or_else(|| chrono::DateTime::from_timestamp_millis(0).expect("epoch is in range"))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 /// Local-time day bucket, because "今日用量" means the user's day, not UTC's.
