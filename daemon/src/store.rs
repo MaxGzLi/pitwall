@@ -435,6 +435,43 @@ ON CONFLICT(harness, session_id) DO UPDATE SET
         Ok(())
     }
 
+    /// A page of summaries older than `before_ms`, newest first.
+    ///
+    /// Keyset, not offset: the snapshot stream keeps writing new summaries while
+    /// somebody is reading, and an offset would quietly skip a row every time one
+    /// arrived. `before_ms` is a place in the list, and stays that place.
+    pub fn summaries_before(
+        &self,
+        before_ms: i64,
+        harness: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<SummaryRow>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            r#"
+SELECT m.harness, m.session_id, s.project, m.headline, m.body, m.model, m.created_at_ms, m.status
+FROM summary m LEFT JOIN session s ON s.harness = m.harness AND s.session_id = m.session_id
+WHERE m.status = 'ok' AND m.created_at_ms < ?1 AND (?2 IS NULL OR m.harness = ?2)
+ORDER BY m.created_at_ms DESC LIMIT ?3
+"#,
+        )?;
+        let rows = stmt
+            .query_map(params![before_ms, harness, limit], |r| {
+                Ok(SummaryRow {
+                    harness: r.get(0)?,
+                    session_id: r.get(1)?,
+                    project: r.get(2)?,
+                    headline: r.get(3)?,
+                    body: r.get(4)?,
+                    model: r.get(5)?,
+                    created_at_ms: r.get(6)?,
+                    status: r.get(7)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     // -- the DSH brain --------------------------------------------------
 
     /// Finished sessions whose summary has not yet been offered to the brain.
@@ -655,7 +692,7 @@ FROM usage_delta WHERE day = ?1 GROUP BY harness ORDER BY harness
 SELECT m.harness, m.session_id, s.project, m.headline, m.body, m.model, m.created_at_ms, m.status
 FROM summary m LEFT JOIN session s ON s.harness = m.harness AND s.session_id = m.session_id
 WHERE m.status = 'ok'
-ORDER BY m.created_at_ms DESC LIMIT 8
+ORDER BY m.created_at_ms DESC LIMIT 24
 "#,
         )?;
         let summaries = stmt
