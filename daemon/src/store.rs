@@ -1,0 +1,692 @@
+//! SQLite store. Single writer (the daemon), WAL so readers never block it.
+
+use std::path::Path;
+use std::sync::Mutex;
+
+use anyhow::{Context, Result};
+use rusqlite::{params, Connection, OptionalExtension};
+
+use crate::model::*;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Price {
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: f64,
+    pub cache_write: f64,
+}
+
+/// A session that ended and has no summary yet.
+#[derive(Debug, Clone)]
+pub struct PendingSummary {
+    pub harness: Harness,
+    pub session_id: String,
+    pub source_path: Option<String>,
+    pub project: Option<String>,
+    pub title: Option<String>,
+}
+
+pub struct Store {
+    conn: Mutex<Connection>,
+}
+
+impl Store {
+    pub fn open(path: &Path) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
+        conn.execute_batch(include_str!("../schema.sql"))
+            .context("applying schema")?;
+        Ok(Self { conn: Mutex::new(conn) })
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    // -- ingest ---------------------------------------------------------
+
+    pub fn apply_updates(&self, updates: &[SessionUpdate]) -> Result<()> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        let now = now_ms();
+
+        for update in updates {
+            let p = &update.patch;
+            let harness = update.harness.as_str();
+            let project = p.cwd.as_deref().map(project_of);
+            let state = p.state.map(|s| s.as_str());
+
+            tx.execute(
+                r#"
+INSERT INTO session (
+  harness, session_id, parent_id, depth, kind, source_path, source_bytes, source_mtime_ms,
+  scan_offset, cwd, project, git_branch, provider, model, effort, context_window, title,
+  first_user_message, started_at_ms, last_activity_ms, ended_at_ms, state, end_signal,
+  end_confidence, pid, proc_start, turns, tool_calls, compactions, parser_version, updated_at_ms
+) VALUES (
+  :harness, :session_id, :parent_id, COALESCE(:depth, 0), COALESCE(:kind, 'interactive'),
+  :source_path, :source_bytes, :source_mtime_ms, COALESCE(:scan_offset, 0), :cwd, :project,
+  :git_branch, :provider, :model, :effort, :context_window, :title, :first_user_message,
+  COALESCE(:started_at_ms, :now), COALESCE(:last_activity_ms, :now), :ended_at_ms,
+  COALESCE(:state, 'unknown'), :end_signal, COALESCE(:end_confidence, 0), :pid, :proc_start,
+  COALESCE(:turns, 0), COALESCE(:tool_calls, 0), COALESCE(:compactions, 0), :parser_version, :now
+)
+ON CONFLICT(harness, session_id) DO UPDATE SET
+  parent_id          = COALESCE(:parent_id, session.parent_id),
+  depth              = COALESCE(:depth, session.depth),
+  kind               = COALESCE(:kind, session.kind),
+  source_path        = COALESCE(:source_path, session.source_path),
+  source_bytes       = COALESCE(:source_bytes, session.source_bytes),
+  source_mtime_ms    = COALESCE(:source_mtime_ms, session.source_mtime_ms),
+  scan_offset        = COALESCE(:scan_offset, session.scan_offset),
+  cwd                = COALESCE(:cwd, session.cwd),
+  project            = COALESCE(:project, session.project),
+  git_branch         = COALESCE(:git_branch, session.git_branch),
+  provider           = COALESCE(:provider, session.provider),
+  model              = COALESCE(:model, session.model),
+  effort             = COALESCE(:effort, session.effort),
+  context_window     = COALESCE(:context_window, session.context_window),
+  title              = COALESCE(:title, session.title),
+  first_user_message = COALESCE(session.first_user_message, :first_user_message),
+  started_at_ms      = MIN(session.started_at_ms, COALESCE(:started_at_ms, session.started_at_ms)),
+  last_activity_ms   = MAX(session.last_activity_ms, COALESCE(:last_activity_ms, session.last_activity_ms)),
+  -- a session that reports any live state again has un-ended itself (DSH resumes do this)
+  ended_at_ms        = CASE WHEN :state IS NOT NULL AND :state <> 'ended' THEN NULL
+                            ELSE COALESCE(session.ended_at_ms, :ended_at_ms) END,
+  state              = COALESCE(:state, session.state),
+  end_signal         = CASE WHEN :state IS NOT NULL AND :state <> 'ended' THEN NULL
+                            ELSE COALESCE(:end_signal, session.end_signal) END,
+  end_confidence     = COALESCE(:end_confidence, session.end_confidence),
+  pid                = COALESCE(:pid, session.pid),
+  proc_start         = COALESCE(:proc_start, session.proc_start),
+  turns              = MAX(session.turns, COALESCE(:turns, session.turns)),
+  tool_calls         = MAX(session.tool_calls, COALESCE(:tool_calls, session.tool_calls)),
+  compactions        = MAX(session.compactions, COALESCE(:compactions, session.compactions)),
+  parser_version     = :parser_version,
+  updated_at_ms      = :now
+"#,
+                rusqlite::named_params! {
+                    ":harness": harness,
+                    ":session_id": update.session_id,
+                    ":parent_id": p.parent_id,
+                    ":depth": p.depth,
+                    ":kind": p.kind,
+                    ":source_path": p.source_path,
+                    ":source_bytes": p.source_bytes,
+                    ":source_mtime_ms": p.source_mtime_ms,
+                    ":scan_offset": p.scan_offset,
+                    ":cwd": p.cwd,
+                    ":project": project,
+                    ":git_branch": p.git_branch,
+                    ":provider": p.provider,
+                    ":model": p.model,
+                    ":effort": p.effort,
+                    ":context_window": p.context_window,
+                    ":title": p.title,
+                    ":first_user_message": p.first_user_message,
+                    ":started_at_ms": p.started_at_ms,
+                    ":last_activity_ms": p.last_activity_ms,
+                    ":ended_at_ms": p.ended_at_ms,
+                    ":state": state,
+                    ":end_signal": p.end_signal,
+                    ":end_confidence": p.end_confidence,
+                    ":pid": p.pid,
+                    ":proc_start": p.proc_start,
+                    ":turns": p.turns,
+                    ":tool_calls": p.tool_calls,
+                    ":compactions": p.compactions,
+                    ":parser_version": PARSER_VERSION,
+                    ":now": now,
+                },
+            )?;
+
+            if update.usage.is_empty() {
+                continue;
+            }
+
+            for delta in &update.usage {
+                let price = price_for(&tx, delta.model.as_deref())?;
+                // reasoning tokens are a subset of output on every provider we read,
+                // so they are reported but never priced twice.
+                let cost = (delta.input as f64 * price.input
+                    + delta.output as f64 * price.output
+                    + delta.cache_read as f64 * price.cache_read
+                    + delta.cache_create as f64 * price.cache_write)
+                    / 1_000_000.0;
+
+                tx.execute(
+                    r#"
+INSERT OR IGNORE INTO usage_delta (
+  harness, session_id, dedup_key, at_ms, day, model,
+  d_input, d_output, d_cache_read, d_cache_create, d_reasoning, cost_usd
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+"#,
+                    params![
+                        harness,
+                        update.session_id,
+                        delta.dedup_key,
+                        delta.at_ms,
+                        day_of(delta.at_ms),
+                        delta.model,
+                        delta.input,
+                        delta.output,
+                        delta.cache_read,
+                        delta.cache_create,
+                        delta.reasoning,
+                        cost,
+                    ],
+                )?;
+            }
+
+            // Totals are always derived, never accumulated in place, so a re-scan
+            // that re-emits known deltas can never inflate them.
+            tx.execute(
+                r#"
+UPDATE session SET
+  tok_input        = COALESCE((SELECT SUM(d_input)        FROM usage_delta u WHERE u.harness = session.harness AND u.session_id = session.session_id), 0),
+  tok_output       = COALESCE((SELECT SUM(d_output)       FROM usage_delta u WHERE u.harness = session.harness AND u.session_id = session.session_id), 0),
+  tok_cache_read   = COALESCE((SELECT SUM(d_cache_read)   FROM usage_delta u WHERE u.harness = session.harness AND u.session_id = session.session_id), 0),
+  tok_cache_create = COALESCE((SELECT SUM(d_cache_create) FROM usage_delta u WHERE u.harness = session.harness AND u.session_id = session.session_id), 0),
+  tok_reasoning    = COALESCE((SELECT SUM(d_reasoning)    FROM usage_delta u WHERE u.harness = session.harness AND u.session_id = session.session_id), 0),
+  cost_usd         = COALESCE((SELECT SUM(cost_usd)       FROM usage_delta u WHERE u.harness = session.harness AND u.session_id = session.session_id), 0)
+WHERE harness = ?1 AND session_id = ?2
+"#,
+                params![harness, update.session_id],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Marks every live session of `harness` whose id is absent from `alive` as ended.
+    /// This is how a vanished process registry becomes an end event.
+    pub fn end_missing(
+        &self,
+        harness: Harness,
+        alive: &[String],
+        signal: &str,
+        confidence: f64,
+    ) -> Result<usize> {
+        let conn = self.lock();
+        let placeholders = if alive.is_empty() {
+            "NULL".to_string()
+        } else {
+            alive.iter().map(|_| "?").collect::<Vec<_>>().join(",")
+        };
+        let sql = format!(
+            r#"
+UPDATE session SET state = 'ended', ended_at_ms = COALESCE(ended_at_ms, last_activity_ms),
+       end_signal = COALESCE(end_signal, ?), end_confidence = MAX(end_confidence, ?),
+       updated_at_ms = ?
+WHERE harness = ? AND state <> 'ended' AND session_id NOT IN ({placeholders})
+"#
+        );
+        let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![
+            Box::new(signal.to_string()),
+            Box::new(confidence),
+            Box::new(now_ms()),
+            Box::new(harness.as_str().to_string()),
+        ];
+        for id in alive {
+            values.push(Box::new(id.clone()));
+        }
+        let refs: Vec<&dyn rusqlite::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+        Ok(conn.execute(&sql, refs.as_slice())?)
+    }
+
+    // -- herdr ----------------------------------------------------------
+
+    pub fn upsert_panes(&self, panes: &[PaneRow]) -> Result<()> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        for pane in panes {
+            tx.execute(
+                r#"
+INSERT INTO herdr_pane (pane_id, workspace_id, tab_id, agent, agent_status, title, cwd,
+                        harness, session_id, focused, seen_at_ms, released)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+ON CONFLICT(pane_id) DO UPDATE SET
+  workspace_id = COALESCE(excluded.workspace_id, herdr_pane.workspace_id),
+  tab_id       = COALESCE(excluded.tab_id, herdr_pane.tab_id),
+  agent        = COALESCE(excluded.agent, herdr_pane.agent),
+  agent_status = COALESCE(excluded.agent_status, herdr_pane.agent_status),
+  title        = COALESCE(excluded.title, herdr_pane.title),
+  cwd          = COALESCE(excluded.cwd, herdr_pane.cwd),
+  harness      = COALESCE(excluded.harness, herdr_pane.harness),
+  session_id   = COALESCE(excluded.session_id, herdr_pane.session_id),
+  focused      = excluded.focused,
+  seen_at_ms   = excluded.seen_at_ms,
+  released     = excluded.released
+"#,
+                params![
+                    pane.pane_id,
+                    pane.workspace_id,
+                    pane.tab_id,
+                    pane.agent,
+                    pane.agent_status,
+                    pane.title,
+                    pane.cwd,
+                    pane.harness,
+                    pane.session_id,
+                    pane.focused as i64,
+                    pane.seen_at_ms,
+                    pane.released as i64,
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn drop_pane(&self, pane_id: &str) -> Result<()> {
+        let conn = self.lock();
+        conn.execute("DELETE FROM herdr_pane WHERE pane_id = ?1", params![pane_id])?;
+        Ok(())
+    }
+
+    // -- quota & pricing ------------------------------------------------
+
+    pub fn put_quota(&self, q: &QuotaRow) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            r#"
+INSERT INTO quota (provider, window, used_percent, balance, currency, plan, resets_at_ms, sampled_at_ms, source)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+ON CONFLICT(provider, window) DO UPDATE SET
+  used_percent = excluded.used_percent, balance = excluded.balance, currency = excluded.currency,
+  plan = excluded.plan, resets_at_ms = excluded.resets_at_ms,
+  sampled_at_ms = excluded.sampled_at_ms, source = excluded.source
+"#,
+            params![
+                q.provider,
+                q.window,
+                q.used_percent,
+                q.balance,
+                q.currency,
+                q.plan,
+                q.resets_at_ms,
+                q.sampled_at_ms,
+                q.source
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn put_prices(&self, prices: &[(String, Price)]) -> Result<usize> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        let now = now_ms();
+        for (model, p) in prices {
+            tx.execute(
+                r#"
+INSERT INTO price (model, input, output, cache_read, cache_write, reasoning, updated_at_ms)
+VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)
+ON CONFLICT(model) DO UPDATE SET
+  input = excluded.input, output = excluded.output, cache_read = excluded.cache_read,
+  cache_write = excluded.cache_write, updated_at_ms = excluded.updated_at_ms
+"#,
+                params![model, p.input, p.output, p.cache_read, p.cache_write, now],
+            )?;
+        }
+        tx.commit()?;
+        Ok(prices.len())
+    }
+
+    pub fn price_count(&self) -> Result<i64> {
+        let conn = self.lock();
+        Ok(conn.query_row("SELECT COUNT(*) FROM price", [], |r| r.get(0))?)
+    }
+
+    // -- summaries ------------------------------------------------------
+
+    pub fn pending_summaries(&self, limit: i64) -> Result<Vec<PendingSummary>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            r#"
+SELECT s.harness, s.session_id, s.source_path, s.project, s.title
+FROM session s
+LEFT JOIN summary m ON m.harness = s.harness AND m.session_id = s.session_id
+WHERE s.state = 'ended' AND s.ended_at_ms IS NOT NULL AND m.session_id IS NULL
+  AND s.turns > 0
+ORDER BY s.ended_at_ms DESC
+LIMIT ?1
+"#,
+        )?;
+        let rows = stmt
+            .query_map(params![limit], |r| {
+                Ok(PendingSummary {
+                    harness: Harness::parse(&r.get::<_, String>(0)?).unwrap_or(Harness::Claude),
+                    session_id: r.get(1)?,
+                    source_path: r.get(2)?,
+                    project: r.get(3)?,
+                    title: r.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn put_summary(
+        &self,
+        harness: Harness,
+        session_id: &str,
+        headline: &str,
+        body: Option<&str>,
+        model: &str,
+        input_chars: usize,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            r#"
+INSERT INTO summary (harness, session_id, headline, body, model, input_chars, created_at_ms, status, error)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+ON CONFLICT(harness, session_id) DO UPDATE SET
+  headline = excluded.headline, body = excluded.body, model = excluded.model,
+  input_chars = excluded.input_chars, created_at_ms = excluded.created_at_ms,
+  status = excluded.status, error = excluded.error
+"#,
+            params![
+                harness.as_str(),
+                session_id,
+                headline,
+                body,
+                model,
+                input_chars as i64,
+                now_ms(),
+                status,
+                error
+            ],
+        )?;
+        Ok(())
+    }
+
+    // -- watermarks -----------------------------------------------------
+
+    pub fn watermark(&self, key: &str) -> Result<Option<String>> {
+        let conn = self.lock();
+        Ok(conn
+            .query_row("SELECT value FROM watermark WHERE key = ?1", params![key], |r| r.get(0))
+            .optional()?)
+    }
+
+    pub fn set_watermark(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            r#"
+INSERT INTO watermark (key, value, updated_at_ms) VALUES (?1, ?2, ?3)
+ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at_ms = excluded.updated_at_ms
+"#,
+            params![key, value, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    /// Byte offset already parsed for one transcript, so tailing never re-reads.
+    pub fn scan_offset(&self, harness: Harness, session_id: &str) -> Result<i64> {
+        let conn = self.lock();
+        Ok(conn
+            .query_row(
+                "SELECT scan_offset FROM session WHERE harness = ?1 AND session_id = ?2",
+                params![harness.as_str(), session_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0))
+    }
+
+    // -- read model -----------------------------------------------------
+
+    pub fn snapshot(&self) -> Result<Snapshot> {
+        let conn = self.lock();
+        let now = now_ms();
+        let today = day_of(now);
+
+        let mut stmt = conn.prepare(
+            r#"
+SELECT s.harness, s.session_id, s.project, s.cwd, s.git_branch, s.title, s.model, s.state,
+       s.started_at_ms, s.last_activity_ms, s.ended_at_ms,
+       s.tok_input + s.tok_output + s.tok_cache_read + s.tok_cache_create AS tok_total,
+       s.cost_usd, s.turns, p.pane_id, p.agent_status
+FROM session s
+LEFT JOIN herdr_pane p ON p.harness = s.harness AND p.session_id = s.session_id AND p.released = 0
+WHERE s.state <> 'ended' AND s.last_activity_ms > ?1
+ORDER BY
+  CASE s.state WHEN 'blocked' THEN 0 WHEN 'working' THEN 1 WHEN 'waiting' THEN 2
+               WHEN 'done' THEN 3 ELSE 4 END,
+  s.last_activity_ms DESC
+LIMIT 40
+"#,
+        )?;
+        let agents = stmt
+            .query_map(params![now - 24 * 3600 * 1000], |r| {
+                Ok(AgentRow {
+                    harness: r.get(0)?,
+                    session_id: r.get(1)?,
+                    project: r.get(2)?,
+                    cwd: r.get(3)?,
+                    git_branch: r.get(4)?,
+                    title: r.get(5)?,
+                    model: r.get(6)?,
+                    state: r.get(7)?,
+                    started_at_ms: r.get(8)?,
+                    last_activity_ms: r.get(9)?,
+                    ended_at_ms: r.get(10)?,
+                    tok_total: r.get(11)?,
+                    cost_usd: r.get(12)?,
+                    turns: r.get(13)?,
+                    pane_id: r.get(14)?,
+                    herdr_status: r.get(15)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        let mut stmt = conn.prepare(
+            "SELECT provider, window, used_percent, balance, currency, plan, resets_at_ms, sampled_at_ms, source
+             FROM quota ORDER BY provider, window",
+        )?;
+        let quota = stmt
+            .query_map([], |r| {
+                Ok(QuotaRow {
+                    provider: r.get(0)?,
+                    window: r.get(1)?,
+                    used_percent: r.get(2)?,
+                    balance: r.get(3)?,
+                    currency: r.get(4)?,
+                    plan: r.get(5)?,
+                    resets_at_ms: r.get(6)?,
+                    sampled_at_ms: r.get(7)?,
+                    source: r.get(8)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        let mut stmt = conn.prepare(
+            r#"
+SELECT harness, SUM(d_input), SUM(d_output), SUM(d_cache_read), SUM(d_cache_create),
+       SUM(d_reasoning), SUM(cost_usd)
+FROM usage_delta WHERE day = ?1 GROUP BY harness ORDER BY harness
+"#,
+        )?;
+        let today_usage = stmt
+            .query_map(params![today], |r| {
+                Ok(DayUsage {
+                    harness: r.get(0)?,
+                    tok_input: r.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                    tok_output: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                    tok_cache_read: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                    tok_cache_create: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                    tok_reasoning: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
+                    cost_usd: r.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        let mut stmt = conn.prepare(
+            r#"
+SELECT m.harness, m.session_id, s.project, m.headline, m.body, m.model, m.created_at_ms, m.status
+FROM summary m LEFT JOIN session s ON s.harness = m.harness AND s.session_id = m.session_id
+WHERE m.status = 'ok'
+ORDER BY m.created_at_ms DESC LIMIT 8
+"#,
+        )?;
+        let summaries = stmt
+            .query_map([], |r| {
+                Ok(SummaryRow {
+                    harness: r.get(0)?,
+                    session_id: r.get(1)?,
+                    project: r.get(2)?,
+                    headline: r.get(3)?,
+                    body: r.get(4)?,
+                    model: r.get(5)?,
+                    created_at_ms: r.get(6)?,
+                    status: r.get(7)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Snapshot {
+            generated_at_ms: now,
+            day: today,
+            agents,
+            quota,
+            today: today_usage,
+            summaries,
+        })
+    }
+
+    /// Recently ended sessions, for the DSH plugin's "读取任务并总结".
+    pub fn recent_sessions(&self, limit: i64, since_ms: i64) -> Result<Vec<(AgentRow, Option<SummaryRow>)>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            r#"
+SELECT s.harness, s.session_id, s.project, s.cwd, s.git_branch, s.title, s.model, s.state,
+       s.started_at_ms, s.last_activity_ms, s.ended_at_ms,
+       s.tok_input + s.tok_output + s.tok_cache_read + s.tok_cache_create AS tok_total,
+       s.cost_usd, s.turns,
+       m.headline, m.body, m.model, m.created_at_ms, m.status
+FROM session s
+LEFT JOIN summary m ON m.harness = s.harness AND m.session_id = s.session_id
+WHERE s.last_activity_ms > ?2 AND s.turns > 0
+ORDER BY s.last_activity_ms DESC LIMIT ?1
+"#,
+        )?;
+        let rows = stmt
+            .query_map(params![limit, since_ms], |r| {
+                let agent = AgentRow {
+                    harness: r.get(0)?,
+                    session_id: r.get(1)?,
+                    project: r.get(2)?,
+                    cwd: r.get(3)?,
+                    git_branch: r.get(4)?,
+                    title: r.get(5)?,
+                    model: r.get(6)?,
+                    state: r.get(7)?,
+                    started_at_ms: r.get(8)?,
+                    last_activity_ms: r.get(9)?,
+                    ended_at_ms: r.get(10)?,
+                    tok_total: r.get(11)?,
+                    cost_usd: r.get(12)?,
+                    turns: r.get(13)?,
+                    pane_id: None,
+                    herdr_status: None,
+                };
+                let headline: Option<String> = r.get(14)?;
+                let summary = headline.map(|h| {
+                    Ok::<_, rusqlite::Error>(SummaryRow {
+                        harness: agent.harness.clone(),
+                        session_id: agent.session_id.clone(),
+                        project: agent.project.clone(),
+                        headline: h,
+                        body: r.get(15)?,
+                        model: r.get::<_, Option<String>>(16)?.unwrap_or_default(),
+                        created_at_ms: r.get::<_, Option<i64>>(17)?.unwrap_or(0),
+                        status: r.get::<_, Option<String>>(18)?.unwrap_or_default(),
+                    })
+                });
+                let summary = match summary {
+                    Some(Ok(s)) => Some(s),
+                    Some(Err(e)) => return Err(e),
+                    None => None,
+                };
+                Ok((agent, summary))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn summary_of(&self, harness: Harness, session_id: &str) -> Result<Option<SummaryRow>> {
+        let conn = self.lock();
+        Ok(conn
+            .query_row(
+                r#"
+SELECT m.harness, m.session_id, s.project, m.headline, m.body, m.model, m.created_at_ms, m.status
+FROM summary m LEFT JOIN session s ON s.harness = m.harness AND s.session_id = m.session_id
+WHERE m.harness = ?1 AND m.session_id = ?2
+"#,
+                params![harness.as_str(), session_id],
+                |r| {
+                    Ok(SummaryRow {
+                        harness: r.get(0)?,
+                        session_id: r.get(1)?,
+                        project: r.get(2)?,
+                        headline: r.get(3)?,
+                        body: r.get(4)?,
+                        model: r.get(5)?,
+                        created_at_ms: r.get(6)?,
+                        status: r.get(7)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+}
+
+/// Looks up a price, tolerating the decorations harnesses add to model ids
+/// (`claude-opus-5[1m]`, `openai/gpt-5.6-sol`).
+fn price_for(conn: &Connection, model: Option<&str>) -> Result<Price> {
+    let Some(model) = model else {
+        return Ok(Price::default());
+    };
+    let mut candidates = vec![model.to_string()];
+    if let Some(base) = model.split('[').next() {
+        candidates.push(base.to_string());
+    }
+    if let Some((_, tail)) = model.rsplit_once('/') {
+        candidates.push(tail.to_string());
+        if let Some(base) = tail.split('[').next() {
+            candidates.push(base.to_string());
+        }
+    }
+    for candidate in candidates {
+        let found = conn
+            .query_row(
+                "SELECT input, output, cache_read, cache_write FROM price WHERE model = ?1",
+                params![candidate],
+                |r| {
+                    Ok(Price {
+                        input: r.get(0)?,
+                        output: r.get(1)?,
+                        cache_read: r.get(2)?,
+                        cache_write: r.get(3)?,
+                    })
+                },
+            )
+            .optional()?;
+        if let Some(price) = found {
+            return Ok(price);
+        }
+    }
+    Ok(Price::default())
+}

@@ -1,0 +1,71 @@
+# ---------- Rust / Cargo (daemon/) ----------
+target/
+**/*.rs.bk
+*.pdb
+
+# ---------- Node / pnpm (plugin/) ----------
+node_modules/
+/plugin/lib/
+dist/
+coverage/
+*.tgz
+.pnpm-store/
+.pnpm-debug.log*
+npm-debug.log*
+
+# ---------- Swift / Xcode (strip/) ----------
+build/
+.build/
+DerivedData/
+*.xcodeproj/
+xcuserdata/
+*.xcuserstate
+.swiftpm/
+Package.resolved
+
+# ---------- macOS ----------
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# ---------- credentials (none in tree today; this is the rule, not a fix) ----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+.netrc
+.credentials
+.credentials.*
+credentials.json
+secrets.*
+id_rsa
+id_ed25519
+
+# ---------- runtime data (the daemon writes real session text into SQLite) ----------
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+.agent-monitor/
+*.log
+
+# ---------- the author's machine ----------
+/env.sh
+/env.local.sh
+
+# ---------- editors ----------
+.idea/
+.vscode/
+*.swp
+*~
+.claude/
+
+# ---------- local verification artifacts ----------
+# Screenshots and run notes from end-to-end checks. They render live sessions —
+# real project names, real quota, real spend — so they stay on the machine that
+# produced them. Anything meant for readers goes in docs/img/ instead.
+/docs/e2e/

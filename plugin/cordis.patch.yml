@@ -1,0 +1,12 @@
+- insert:
+    - id: dsh-monitor
+      name: '@maxgzli/dsh-monitor'
+      config:
+        serviceUrl: 'http://127.0.0.1:39917'
+        toolsEnabled: true
+        requestTimeoutMs: 4000
+        pollIntervalMs: 5000
+        defaultSessionLimit: 10
+        maxSessionLimit: 30
+        maxSummaryChars: 600
+        maxTitleChars: 90

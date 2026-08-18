@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent monitor</title>
+<link rel="stylesheet" href="strip.css">
+</head>
+<body>
+
+<!-- The top 26px of the window is a native drag handle (see ChromeView.swift).
+     This pill is the only hint of it; it covers no content and takes no clicks. -->
+<div id="grip" aria-hidden="true"></div>
+
+<div id="strip">
+
+  <section class="region r-agents">
+    <header><span class="rlabel">agents</span><span id="agents-more" class="more"></span></header>
+    <div id="agents" class="rows"></div>
+  </section>
+
+  <section class="region r-quota">
+    <header><span class="rlabel">quota</span><span id="quota-more" class="more"></span></header>
+    <div id="quota" class="rows"></div>
+  </section>
+
+  <section class="region r-today">
+    <header><span class="rlabel">today</span></header>
+    <div id="today" class="rows"></div>
+  </section>
+
+  <section class="region r-summaries">
+    <header><span class="rlabel">summaries</span><span id="conn" class="conn" title="connecting"></span></header>
+    <div id="summaries" class="rows"></div>
+  </section>
+
+</div>
+
+<!-- The close button clears the top 26px drag band and the 6px resize edge on
+     purpose: sitting in either one, it was almost impossible to hit. -->
+<div id="overlay" class="overlay" hidden>
+ <div class="ov-card">
+  <button id="ov-close" type="button" title="close">&#10005;</button>
+  <div class="ov-head">
+    <div class="ov-who">
+      <span id="ov-tag" class="ov-tag"></span>
+      <span id="ov-proj" class="ov-proj"></span>
+      <span id="ov-time" class="ov-time"></span>
+    </div>
+    <div id="ov-title" class="ov-title"></div>
+  </div>
+  <div id="ov-body" class="ov-body"></div>
+  <div id="ov-meta" class="ov-meta"></div>
+ </div>
+</div>
+
+<script src="strip.js"></script>
+</body>
+</html>

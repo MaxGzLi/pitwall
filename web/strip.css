@@ -1,0 +1,571 @@
+/* The window is user-resized now, so nothing here may assume a fixed box.
+   Regions are cards in a grid that reflows at two breakpoints; row counts are
+   decided at runtime in strip.js from the measured height of each card. */
+
+:root {
+  --bg: #0a0c0f;
+  --card: #0e1218;
+  --card-hi: #131922;
+  --fg: #dfe4ec;
+  --fg2: #b3bcc9;
+  --muted: #838d9c;
+  --dim: #5c6674;
+  --rule: #1c222b;
+  --track: #1d232c;
+
+  --red: #ff5a5f;
+  --green: #3ddc84;
+  --amber: #f0b429;
+  --blue: #55a8ff;
+  --grey: #6c7684;
+
+  --gap: 7px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  cursor: default;
+  user-select: none;
+}
+
+/* drag affordance for the native handle above; never eats a click */
+#grip {
+  position: fixed;
+  top: 3px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 34px;
+  height: 3px;
+  border-radius: 2px;
+  background: #29313c;
+  pointer-events: none;
+  z-index: 5;
+}
+
+#strip {
+  height: 100%;
+  padding: 9px var(--gap) var(--gap);
+  display: grid;
+  gap: var(--gap);
+  /* Tall enough to be a window: agents take the whole first row, because the
+     title is the only field that actually needs the width. */
+  grid-template-columns: minmax(0, 1fr) 150px minmax(0, 1.2fr);
+  grid-template-rows: minmax(0, 1.15fr) minmax(0, 1fr);
+  grid-template-areas:
+    "agents agents agents"
+    "quota  today  summaries";
+}
+.r-agents    { grid-area: agents; }
+.r-quota     { grid-area: quota; }
+.r-today     { grid-area: today; }
+.r-summaries { grid-area: summaries; }
+
+/* Narrow: one column, agents still the tallest. */
+@media (max-width: 760px) {
+  #strip {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1.4fr) auto auto minmax(0, 1fr);
+    grid-template-areas: "agents" "quota" "today" "summaries";
+  }
+}
+
+/* Dragged back down to a strip: one row again, like the dock it started as.
+   Declared after the width rules so it wins when both apply. */
+@media (max-height: 215px) {
+  #strip {
+    grid-template-columns: minmax(0, 1fr) 200px 132px 176px;
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: "agents quota today summaries";
+  }
+}
+/* below this the four cards start starving each other; drop them by usefulness */
+@media (max-height: 215px) and (max-width: 880px) {
+  #strip {
+    grid-template-columns: minmax(0, 1fr) 200px 132px;
+    grid-template-areas: "agents quota today";
+  }
+  .r-summaries { display: none; }
+}
+@media (max-height: 215px) and (max-width: 680px) {
+  #strip {
+    grid-template-columns: minmax(0, 1fr) 200px;
+    grid-template-areas: "agents quota";
+  }
+  .r-today { display: none; }
+}
+
+.region {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 10px 8px;
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: 7px;
+}
+
+.region > header {
+  height: 13px;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: none;
+}
+.rlabel {
+  font-size: 9px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.more { font-size: 10px; color: var(--muted); }
+
+.rows {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow: hidden;
+}
+
+.empty {
+  font-size: 12px;
+  color: var(--dim);
+  padding-top: 4px;
+}
+
+/* --- agents ------------------------------------------------------- */
+
+.agent {
+  height: 27px;
+  flex: none;
+  display: grid;
+  grid-template-columns: 66px 44px 150px minmax(0, 1fr) 48px 58px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 7px 0 5px;
+  border-left: 2px solid transparent;
+  border-radius: 4px;
+  transition: background-color .35s ease, border-color .35s ease;
+}
+
+/* the state, spelled out — a coloured dot was too easy to miss */
+.st {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  text-align: center;
+  padding: 3px 0;
+  border-radius: 3px;
+  background: rgba(108, 118, 132, .14);
+  color: var(--grey);
+  white-space: nowrap;
+}
+/* The indicator carries the state as motion, not just colour: bars only move
+   while an agent is actually working, so a glance at the column tells you
+   whether anything is running without reading a word. */
+.ind {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 8px;
+  margin-right: 5px;
+  vertical-align: -1px;
+}
+.ind i {
+  width: 2px;
+  height: 2px;
+  border-radius: 1px;
+  background: currentColor;
+}
+/* still states collapse to the single dot they always were */
+.ind.dot { height: 5px; }
+.ind.dot i { width: 5px; height: 5px; border-radius: 50%; }
+
+@keyframes eq { 0%, 100% { height: 2px } 50% { height: 8px } }
+.s-working .ind i { animation: eq 1.05s ease-in-out infinite; }
+.s-working .ind i:nth-child(2) { animation-delay: .19s; }
+.s-working .ind i:nth-child(3) { animation-delay: .38s; }
+
+/* blocked and waiting need a human, so they breathe instead of sitting still */
+@keyframes throb { 0%, 100% { opacity: 1; transform: scale(1) } 50% { opacity: .35; transform: scale(.72) } }
+.s-blocked .ind i, .s-waiting .ind i { animation: throb 1.15s ease-in-out infinite; }
+
+/* done gets one ring, once — it is news, not an ongoing condition */
+@keyframes ring {
+  0%   { box-shadow: 0 0 0 0 currentColor }
+  70%  { box-shadow: 0 0 0 5px transparent }
+  100% { box-shadow: 0 0 0 0 transparent }
+}
+.s-done .ind i { animation: ring 1.6s ease-out 3; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ind i { animation: none !important; height: 5px; }
+}
+.s-working .st { background: rgba(61, 220, 132, .14);  color: var(--green); }
+.s-waiting .st { background: rgba(240, 180, 41, .15);  color: var(--amber); }
+.s-blocked .st { background: rgba(255, 90, 95, .18);   color: var(--red); }
+.s-done    .st { background: rgba(85, 168, 255, .20);  color: var(--blue); }
+
+.tag {
+  font-size: 10px;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.proj {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.ttl {
+  font-size: 13px;
+  color: var(--muted);
+}
+.proj, .ttl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.age, .tok {
+  font-size: 13px;
+  text-align: right;
+  color: var(--fg2);
+}
+.age { color: var(--muted); }
+
+/* Strip mode leaves the agents card ~430px. The harness label is the least
+   informative column, so it yields its width to the title. */
+@media (max-height: 215px) {
+  .agent { grid-template-columns: 62px 112px minmax(0, 1fr) 44px 52px; gap: 6px; }
+  .agent .tag { display: none; }
+  .st { font-size: 8px; padding: 2px 0; }
+  .ind { height: 7px; margin-right: 4px; }
+  .ind.dot, .ind.dot i { height: 4px; }
+  .ind.dot i { width: 4px; }
+  @keyframes eq { 0%, 100% { height: 2px } 50% { height: 7px } }
+}
+
+.s-idle .proj, .s-unknown .proj, .s-ended .proj { color: var(--fg2); }
+
+.s-blocked {
+  background: rgba(255, 90, 95, .11);
+  border-left-color: var(--red);
+}
+.s-blocked .proj { color: #ffd6d7; }
+
+/* finished while you were not looking — the row the whole window exists for */
+.s-done {
+  background: rgba(85, 168, 255, .16);
+  border-left-color: var(--blue);
+}
+.s-done .proj { color: #dcecff; }
+.s-done .ttl  { color: #9dc4ea; }
+
+/* --- quota -------------------------------------------------------- */
+
+.q {
+  height: 26px;
+  flex: none;
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) 58px 46px;
+  align-items: center;
+  gap: 6px;
+}
+.q-label {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bar {
+  height: 8px;
+  border-radius: 2px;
+  background: var(--track);
+  overflow: hidden;
+}
+.fill {
+  display: block;   /* inline spans ignore width/height — the bar was always empty */
+  height: 100%;
+  background: var(--green);
+  transition: width .35s ease, background-color .35s ease;
+}
+.fill.warn { background: var(--amber); }
+.fill.crit { background: var(--red); }
+.q-pct {
+  font-size: 12px;
+  text-align: right;
+  color: var(--fg2);
+  white-space: nowrap;
+}
+/* Says which direction the bar runs. Without it a long bar reads equally well
+   as "90% left", which is the opposite of what it means. */
+.q-used {
+  margin-left: 3px;
+  font-size: 9px;
+  color: var(--dim);
+}
+.q-pct.warn { color: var(--amber); }
+.q-pct.crit { color: var(--red); }
+.q-reset {
+  font-size: 11px;
+  text-align: right;
+  color: var(--dim);
+  white-space: nowrap;
+}
+/* Age of the sample, not a countdown: this row's source has gone quiet. */
+.q-reset.stale { color: var(--amber); opacity: .7; }
+.q-bal {
+  grid-column: 2 / span 2;
+  font-size: 12px;
+  color: var(--fg2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Strip mode: the reset countdown is the first thing a narrow quota card can
+   spare, and dropping it keeps the bar wide enough to read. Declared here, after
+   the base rules — a media query adds no specificity, so source order decides. */
+@media (max-height: 215px) {
+  .q { grid-template-columns: 76px minmax(0, 1fr) 54px; gap: 6px; }
+  .q-reset { display: none; }
+  /* No room for the age here, so a stale row is faded instead of labelled. */
+  .q.q-stale { opacity: .5; }
+}
+
+/* --- today -------------------------------------------------------- */
+
+.t {
+  height: 22px;
+  flex: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 64px;
+  align-items: center;
+}
+.t-h { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.t-v { font-size: 13px; text-align: right; color: var(--fg2); }
+
+/* The big number totals the token column above it. The dollar figure is an
+   estimate derived from those tokens, so it reads as a subtitle, not as a
+   second headline in a different unit. */
+.t-total {
+  margin-top: auto;
+  flex: none;
+  border-top: 1px solid var(--rule);
+  padding-top: 5px;
+}
+.t-total .row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+.t-total .v { font-size: 19px; font-weight: 600; color: var(--fg); }
+.t-total .k {
+  font-size: 8px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  white-space: nowrap;
+}
+.t-cost {
+  margin-top: 2px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+@media (max-height: 215px) {
+  .t { grid-template-columns: minmax(0, 1fr) 58px; }
+  .t-v { font-size: 12px; }
+  .t-total .v { font-size: 17px; }
+  .t-cost { font-size: 10px; }
+}
+
+/* --- summaries ---------------------------------------------------- */
+
+.sum {
+  flex: none;
+  padding: 2px 7px;
+  border-left: 2px solid var(--rule);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.sum:hover { background: var(--card-hi); }
+.sum .meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--dim);
+  line-height: 13px;
+}
+.sum .head {
+  font-size: 13px;
+  color: var(--fg2);
+  line-height: 17px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sum .body {
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--dim);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+/* only when the card is tall enough to afford it — set in strip.js */
+.rows:not(.rich) .sum .body { display: none; }
+
+.conn {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--grey);
+  transition: background-color .35s ease;
+}
+.conn.live  { background: var(--green); }
+.conn.poll  { background: var(--amber); }
+.conn.down  { background: var(--red); }
+
+/* --- overlay ------------------------------------------------------ */
+
+/* A centred card, not a full-bleed sheet: a four-line summary stretched over a
+   700px-tall window is mostly void. Clicking the backdrop closes too, so the
+   button is no longer the only way out. */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  /* opaque: at 98.5% alpha the strip underneath was still plainly legible */
+  background: #080a0d;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* the top pad keeps the card clear of the 26pt native drag band */
+  padding: 34px 16px 16px;
+}
+.overlay[hidden] { display: none; }
+
+.ov-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 700px;
+  max-height: 100%;
+  padding: 13px 15px 11px;
+  border: 1px solid #212a34;
+  border-radius: 9px;
+  background: var(--card);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, .55);
+}
+
+#ov-close {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  width: 26px;
+  height: 26px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--muted);
+  background: #161c24;
+  border: 1px solid #262e39;
+  border-radius: 5px;
+  cursor: pointer;
+}
+#ov-close:hover { color: var(--fg); background: #1e262f; }
+
+.ov-head { flex: none; padding-right: 34px; }
+.ov-who {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 10px;
+  line-height: 14px;
+}
+.ov-tag {
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.ov-proj { font-size: 13px; font-weight: 600; color: var(--fg); }
+.ov-time { color: var(--dim); }
+.ov-title {
+  margin-top: 3px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--fg);
+}
+
+.ov-body {
+  /* auto height, not flex:1 — the card hugs its content and only scrolls once
+     max-height caps it */
+  flex: 0 1 auto;
+  min-height: 0;
+  margin-top: 10px;
+  overflow-y: auto;
+  user-select: text;
+}
+
+/* One labelled paragraph per fact. The chip carries the question, the sentence
+   answers it — which is the whole point of reading this at a glance. */
+.f {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  padding: 5px 0;
+  border-top: 1px solid var(--rule);
+}
+.f:first-child { border-top: 0; padding-top: 0; }
+.f-k {
+  font-size: 10px;
+  line-height: 18px;
+  text-align: center;
+  border-radius: 3px;
+  color: var(--muted);
+  background: #161c24;
+}
+.f-v {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg2);
+}
+.f-todo  .f-k { color: var(--amber); background: rgba(240, 180, 41, .13); }
+.f-todo  .f-v { color: #f3dcae; }
+.f-issue .f-k { color: var(--red);   background: rgba(255, 90, 95, .15); }
+.f-issue .f-v { color: #ffd6d7; }
+.f-done  .f-k { color: var(--green); background: rgba(61, 220, 132, .12); }
+
+/* fallback for summaries written before the labelled format */
+.f-plain { font-size: 13px; line-height: 1.6; color: var(--fg2); padding: 3px 0; }
+
+.ov-meta {
+  flex: none;
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid var(--rule);
+  font-size: 10px;
+  color: var(--dim);
+  user-select: text;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

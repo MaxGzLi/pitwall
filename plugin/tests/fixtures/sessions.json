@@ -1,0 +1,170 @@
+[
+  [
+    {
+      "harness": "codex",
+      "session_id": "71a6f48b-3e84-3266-0883-7c5d96eac262",
+      "project": "demo-app",
+      "cwd": "/home/u/demo-app",
+      "git_branch": "main",
+      "title": "Port the parser to the new API",
+      "model": "gpt-5.6-sol",
+      "state": "working",
+      "started_at_ms": 1787036883666,
+      "last_activity_ms": 1787037362549,
+      "ended_at_ms": null,
+      "tok_total": 388281,
+      "cost_usd": 2.9692,
+      "turns": 1,
+      "pane_id": null,
+      "herdr_status": null
+    },
+    null
+  ],
+  [
+    {
+      "harness": "codex",
+      "session_id": "bab3c562-c9fd-c7ea-633d-80ffaf3722bb",
+      "project": "demo-app",
+      "cwd": "/home/u/demo-app",
+      "git_branch": "main",
+      "title": null,
+      "model": "gpt-5.6-sol",
+      "state": "working",
+      "started_at_ms": 1787037051638,
+      "last_activity_ms": 1787037359405,
+      "ended_at_ms": null,
+      "tok_total": 369350,
+      "cost_usd": 1.9182,
+      "turns": 1,
+      "pane_id": null,
+      "herdr_status": null
+    },
+    null
+  ],
+  [
+    {
+      "harness": "codex",
+      "session_id": "9074554f-7284-4d3d-6bda-23506a748e6b",
+      "project": "demo-app",
+      "cwd": "/home/u/demo-app",
+      "git_branch": "main",
+      "title": null,
+      "model": "gpt-5.6-sol",
+      "state": "working",
+      "started_at_ms": 1787037090984,
+      "last_activity_ms": 1787037357946,
+      "ended_at_ms": null,
+      "tok_total": 646592,
+      "cost_usd": 1.6333,
+      "turns": 1,
+      "pane_id": null,
+      "herdr_status": null
+    },
+    null
+  ],
+  [
+    {
+      "harness": "claude",
+      "session_id": "fff8682577a6a2047",
+      "project": "demo-api",
+      "cwd": "/home/u/demo-web/demo-api",
+      "git_branch": "HEAD",
+      "title": "Cache the pricing table",
+      "model": "claude-opus-5",
+      "state": "working",
+      "started_at_ms": 1787036244269,
+      "last_activity_ms": 1787037352268,
+      "ended_at_ms": null,
+      "tok_total": 733790,
+      "cost_usd": 1.5928,
+      "turns": 1,
+      "pane_id": null,
+      "herdr_status": null
+    },
+    null
+  ],
+  [
+    {
+      "harness": "claude",
+      "session_id": "222c4f610823309d3",
+      "project": "demo-api",
+      "cwd": "/home/u/demo-web/demo-api",
+      "git_branch": "HEAD",
+      "title": "Split the router into modules",
+      "model": "claude-opus-5",
+      "state": "working",
+      "started_at_ms": 1787036244269,
+      "last_activity_ms": 1787037349236,
+      "ended_at_ms": null,
+      "tok_total": 242829,
+      "cost_usd": 4.9126,
+      "turns": 1,
+      "pane_id": null,
+      "herdr_status": null
+    },
+    null
+  ],
+  [
+    {
+      "harness": "claude",
+      "session_id": "58ce7db2292e5f8f5",
+      "project": "demo-api",
+      "cwd": "/home/u/demo-web/demo-api",
+      "git_branch": "HEAD",
+      "title": "Document the plugin hooks",
+      "model": "claude-opus-5",
+      "state": "working",
+      "started_at_ms": 1787036244269,
+      "last_activity_ms": 1787037344372,
+      "ended_at_ms": null,
+      "tok_total": 861137,
+      "cost_usd": 1.2279,
+      "turns": 1,
+      "pane_id": null,
+      "herdr_status": null
+    },
+    null
+  ],
+  [
+    {
+      "harness": "claude",
+      "session_id": "642bfb1dbbd9a772a",
+      "project": "demo-cli",
+      "cwd": "/home/u/demo-web/demo-api/demo-cli",
+      "git_branch": "HEAD",
+      "title": "Add retry to the fetch helper",
+      "model": "claude-opus-5",
+      "state": "working",
+      "started_at_ms": 1787036734878,
+      "last_activity_ms": 1787037343528,
+      "ended_at_ms": null,
+      "tok_total": 734736,
+      "cost_usd": 0.5149,
+      "turns": 1,
+      "pane_id": null,
+      "herdr_status": null
+    },
+    null
+  ],
+  [
+    {
+      "harness": "claude",
+      "session_id": "bf16419c-6241-26e2-d7fc-22c041522561",
+      "project": "demo-web",
+      "cwd": "/home/u/demo-web",
+      "git_branch": "HEAD",
+      "title": "Wire up the settings panel",
+      "model": "claude-opus-5",
+      "state": "working",
+      "started_at_ms": 1787032865427,
+      "last_activity_ms": 1787037342326,
+      "ended_at_ms": null,
+      "tok_total": 41327,
+      "cost_usd": 2.4758,
+      "turns": 5,
+      "pane_id": null,
+      "herdr_status": null
+    },
+    null
+  ]
+]
