@@ -86,6 +86,17 @@ CREATE TABLE IF NOT EXISTS summary (
 
 CREATE INDEX IF NOT EXISTS summary_recent ON summary(created_at_ms DESC);
 
+-- What has already been handed to the DSH brain, keyed by the idempotency key
+-- that was sent with it. The brain deduplicates on that key too, so this table
+-- is not what makes the capture safe -- it is what stops the daemon from
+-- re-offering thousands of old sessions on every restart just to be told no.
+CREATE TABLE IF NOT EXISTS brain_capture (
+  key        TEXT PRIMARY KEY,     -- 'pitwall/session/<harness>/<id>' etc
+  memory_id  TEXT,                 -- what the vault called it, when it said
+  outcome    TEXT    NOT NULL,     -- stored|duplicate|rejected
+  at_ms      INTEGER NOT NULL
+) STRICT;
+
 -- Live herdr topology: which pane hosts which session.
 CREATE TABLE IF NOT EXISTS herdr_pane (
   pane_id       TEXT PRIMARY KEY,
