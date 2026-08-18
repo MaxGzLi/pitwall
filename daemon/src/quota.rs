@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use serde_json::Value;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::config::{deepseek_key, Config};
 use crate::model::{now_ms, QuotaRow};
@@ -37,7 +37,15 @@ pub async fn refresh(cfg: &Config, store: &Store) -> Result<()> {
     }
 
     for row in &rows {
-        store.put_quota(row)?;
+        if !store.put_quota(row)? {
+            // Not fatal, but worth a line: it means a source that normally wins
+            // this window went quiet, and the panel is still showing the value
+            // it left behind.
+            warn!(
+                provider = %row.provider, window = %row.window, source = %row.source,
+                "older than the stored sample, kept the stored one"
+            );
+        }
     }
     debug!(rows = rows.len(), "quota refreshed");
     Ok(())

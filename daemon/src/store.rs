@@ -293,9 +293,19 @@ ON CONFLICT(pane_id) DO UPDATE SET
 
     // -- quota & pricing ------------------------------------------------
 
-    pub fn put_quota(&self, q: &QuotaRow) -> Result<()> {
+    /// Refuses to replace a sample with an older one, and reports which happened.
+    ///
+    /// Several sources describe the same window at different freshness --
+    /// anthropic/5h comes from the claude-hud cache, which is minutes old, and
+    /// from ~/.claude.json, which is only rewritten when Claude Code itself runs
+    /// and can sit a day behind. The in-memory merge in `quota::refresh` already
+    /// prefers the fresher one within a single pass, but it cannot see the last
+    /// pass: when the fresher file is momentarily unreadable, the slower source
+    /// would otherwise install a day-old number under the same label and the
+    /// panel would show the quota jumping backwards.
+    pub fn put_quota(&self, q: &QuotaRow) -> Result<bool> {
         let conn = self.lock();
-        conn.execute(
+        let written = conn.execute(
             r#"
 INSERT INTO quota (provider, window, used_percent, balance, currency, plan, resets_at_ms, sampled_at_ms, source)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
@@ -303,6 +313,7 @@ ON CONFLICT(provider, window) DO UPDATE SET
   used_percent = excluded.used_percent, balance = excluded.balance, currency = excluded.currency,
   plan = excluded.plan, resets_at_ms = excluded.resets_at_ms,
   sampled_at_ms = excluded.sampled_at_ms, source = excluded.source
+WHERE excluded.sampled_at_ms >= quota.sampled_at_ms
 "#,
             params![
                 q.provider,
@@ -316,7 +327,7 @@ ON CONFLICT(provider, window) DO UPDATE SET
                 q.source
             ],
         )?;
-        Ok(())
+        Ok(written > 0)
     }
 
     pub fn put_prices(&self, prices: &[(String, Price)]) -> Result<usize> {
@@ -689,4 +700,56 @@ fn price_for(conn: &Connection, model: Option<&str>) -> Result<Price> {
         }
     }
     Ok(Price::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(source: &str, percent: f64, sampled_at_ms: i64) -> QuotaRow {
+        QuotaRow {
+            provider: "anthropic".into(),
+            window: "7d".into(),
+            used_percent: Some(percent),
+            balance: None,
+            currency: None,
+            plan: None,
+            resets_at_ms: None,
+            sampled_at_ms,
+            source: source.into(),
+        }
+    }
+
+    fn stored(store: &Store) -> (f64, String) {
+        let conn = store.lock();
+        conn.query_row(
+            "SELECT used_percent, source FROM quota WHERE provider = 'anthropic' AND window = '7d'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    /// The claude-hud cache going quiet for one pass must not let the day-old
+    /// copy of the same window in ~/.claude.json take the row over.
+    #[test]
+    fn older_sample_never_replaces_newer() {
+        let path = std::env::temp_dir().join(format!("agent-monitor-quota-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let store = Store::open(&path).unwrap();
+
+        assert!(store.put_quota(&row("hud", 92.0, 1_000_000)).unwrap());
+        assert!(!store.put_quota(&row("dotjson", 64.0, 900_000)).unwrap());
+        assert_eq!(stored(&store), (92.0, "hud".to_string()));
+
+        // A genuinely newer sample still gets through, including one that moves
+        // the percentage down -- windows do reset.
+        assert!(store.put_quota(&row("hud", 3.0, 1_100_000)).unwrap());
+        assert_eq!(stored(&store), (3.0, "hud".to_string()));
+
+        // Same sample re-offered by the same source is a no-op, not a rejection.
+        assert!(store.put_quota(&row("hud", 3.0, 1_100_000)).unwrap());
+
+        let _ = std::fs::remove_file(&path);
+    }
 }
