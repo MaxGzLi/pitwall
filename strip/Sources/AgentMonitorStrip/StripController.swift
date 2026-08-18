@@ -63,6 +63,7 @@ final class StripController: NSObject, WKNavigationDelegate {
         super.init()
         webView.navigationDelegate = self
         panel.delegate = self
+        chrome.onDragBarDoubleClick = { [weak self] in self?.snapToBottom() }
     }
 
     /// A 10pt radius needs the panel itself to be transparent, hence `isOpaque = false`
@@ -110,6 +111,27 @@ final class StripController: NSObject, WKNavigationDelegate {
         guard let screen else { return NSRect(x: 0, y: 0, width: 900, height: config.height) }
         let f = screen.frame
         return NSRect(x: f.minX, y: f.minY, width: f.width, height: config.height)
+    }
+
+    /// Double-clicking the drag bar re-seats the window on the bottom edge of the
+    /// display it currently sits on, full width, keeping whatever height the user
+    /// has dragged it to. It undoes a session of nudging without also undoing the
+    /// one dimension that is genuinely a preference.
+    private func snapToBottom() {
+        guard let screen = currentScreen() else { return }
+        let s = screen.frame
+        panel.setFrame(NSRect(x: s.minX, y: s.minY, width: s.width, height: panel.frame.height), display: true)
+    }
+
+    /// The display the window mostly covers — a snap belongs on the screen the
+    /// user dragged the window to, not on the portrait one it defaults to.
+    private func currentScreen() -> NSScreen? {
+        let frame = panel.frame
+        func overlap(_ screen: NSScreen) -> CGFloat {
+            let hit = screen.frame.intersection(frame)
+            return hit.width * hit.height
+        }
+        return NSScreen.screens.max { overlap($0) < overlap($1) } ?? NSScreen.main
     }
 
     /// Called when displays change. A saved frame can name a screen that is gone,
@@ -210,6 +232,10 @@ private final class ChromeView: NSView {
     private let dragBar: CGFloat = 26
     private let edge: CGFloat = 6
 
+    /// Double-click on the drag bar. This is the gesture a real title bar spends
+    /// on zoom; there is no title bar here, so the panel spends it on snapping.
+    var onDragBarDoubleClick: (() -> Void)?
+
     private var anchor: NSPoint = .zero
     private var startOrigin: NSPoint = .zero
     private var dragging = false
@@ -231,6 +257,10 @@ private final class ChromeView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard let window, isDragBar(convert(event.locationInWindow, from: nil)) else { return }
+        if event.clickCount >= 2 {
+            onDragBarDoubleClick?()
+            return
+        }
         dragging = true
         anchor = NSEvent.mouseLocation
         startOrigin = window.frame.origin
