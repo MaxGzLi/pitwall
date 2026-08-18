@@ -461,19 +461,52 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at_ms = excluded.
         let now = now_ms();
         let today = day_of(now);
 
+        // One row per *top-level* session, carrying its whole subtree.
+        //
+        // A fan-out is one agent's work, not twenty agents. Every harness here
+        // spawns children -- Claude's Task tool, Codex's subagents, DSH's
+        // delegation -- and a workflow can have a dozen running at once, all
+        // freshly active, which is exactly the order this list sorts by. Listed
+        // individually they take every visible slot and bury the session the
+        // human is actually sitting in front of.
+        //
+        // So the children fold into their root, and the root's numbers become the
+        // subtree's: they hold more than half the tokens ever recorded on this
+        // machine, and a parent showing only its own usage while its children
+        // spend ten times that is worse than not showing a number at all. Same
+        // for activity -- a parent blocked on eleven children writes nothing to
+        // its own transcript, and would age out of a list it is the reason for.
+        //
+        // `kids` is what is left of them: how many descendants are still live,
+        // so a fan-out reads as one busy row instead of vanishing.
         let mut stmt = conn.prepare(
             r#"
+WITH RECURSIVE tree(harness, root, id) AS (
+  SELECT harness, session_id, session_id FROM session WHERE COALESCE(depth, 0) = 0
+  UNION
+  SELECT t.harness, t.root, c.session_id
+    FROM session c JOIN tree t ON c.harness = t.harness AND c.parent_id = t.id
+),
+subtree AS (
+  SELECT t.harness, t.root,
+         SUM(c.tok_input + c.tok_output + c.tok_cache_read + c.tok_cache_create) AS tok_total,
+         SUM(c.cost_usd) AS cost_usd,
+         MAX(c.last_activity_ms) AS last_activity_ms,
+         SUM(c.session_id <> t.root AND c.state <> 'ended') AS kids
+    FROM tree t JOIN session c ON c.harness = t.harness AND c.session_id = t.id
+   GROUP BY t.harness, t.root
+)
 SELECT s.harness, s.session_id, s.project, s.cwd, s.git_branch, s.title, s.model, s.state,
-       s.started_at_ms, s.last_activity_ms, s.ended_at_ms,
-       s.tok_input + s.tok_output + s.tok_cache_read + s.tok_cache_create AS tok_total,
-       s.cost_usd, s.turns, p.pane_id, p.agent_status
+       s.started_at_ms, r.last_activity_ms, s.ended_at_ms,
+       r.tok_total, r.cost_usd, s.turns, p.pane_id, p.agent_status, r.kids
 FROM session s
+JOIN subtree r ON r.harness = s.harness AND r.root = s.session_id
 LEFT JOIN herdr_pane p ON p.harness = s.harness AND p.session_id = s.session_id AND p.released = 0
-WHERE s.state <> 'ended' AND s.last_activity_ms > ?1
+WHERE s.state <> 'ended' AND r.last_activity_ms > ?1
 ORDER BY
   CASE s.state WHEN 'blocked' THEN 0 WHEN 'working' THEN 1 WHEN 'waiting' THEN 2
                WHEN 'done' THEN 3 ELSE 4 END,
-  s.last_activity_ms DESC
+  r.last_activity_ms DESC
 LIMIT 40
 "#,
         )?;
@@ -496,6 +529,7 @@ LIMIT 40
                     turns: r.get(13)?,
                     pane_id: r.get(14)?,
                     herdr_status: r.get(15)?,
+                    kids: r.get(16)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -612,6 +646,9 @@ ORDER BY s.last_activity_ms DESC LIMIT ?1
                     turns: r.get(13)?,
                     pane_id: None,
                     herdr_status: None,
+                    // This list is per session, not per subtree: a subagent that
+                    // ended gets its own summary, so nothing is being rolled up.
+                    kids: 0,
                 };
                 let headline: Option<String> = r.get(14)?;
                 let summary = headline.map(|h| {
@@ -749,6 +786,63 @@ mod tests {
 
         // Same sample re-offered by the same source is a no-op, not a rejection.
         assert!(store.put_quota(&row("hud", 3.0, 1_100_000)).unwrap());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn session(id: &str, parent: Option<&str>, depth: i64, state: State, tok: i64) -> SessionUpdate {
+        let mut u = SessionUpdate::new(Harness::Claude, id);
+        u.patch.parent_id = parent.map(str::to_string);
+        u.patch.depth = Some(depth);
+        u.patch.kind = Some(if depth == 0 { "interactive" } else { "subagent" }.into());
+        u.patch.state = Some(state);
+        u.patch.last_activity_ms = Some(now_ms());
+        u.usage = vec![UsageDelta {
+            dedup_key: format!("{id}#1"),
+            at_ms: now_ms(),
+            model: Some("claude-opus-5".into()),
+            input: tok,
+            output: 0,
+            cache_read: 0,
+            cache_create: 0,
+            reasoning: 0,
+        }];
+        u
+    }
+
+    /// A workflow fanning out is one row, not a dozen -- and that row has to
+    /// carry the tokens its children spent, or hiding them hides the spend.
+    #[test]
+    fn a_fan_out_is_one_row_carrying_its_whole_subtree() {
+        let path = std::env::temp_dir().join(format!("agent-monitor-tree-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let store = Store::open(&path).unwrap();
+
+        store
+            .apply_updates(&[
+                session("root", None, 0, State::Working, 100),
+                session("kid-a", Some("root"), 1, State::Working, 10),
+                session("kid-b", Some("root"), 1, State::Working, 20),
+                // Ended children still count their tokens; they just are not live.
+                session("kid-c", Some("root"), 1, State::Ended, 30),
+                // Depth is not always 1: a subagent may spawn its own.
+                session("grandkid", Some("kid-a"), 2, State::Working, 40),
+                // An unrelated session must stay its own row.
+                session("solo", None, 0, State::Working, 7),
+            ])
+            .unwrap();
+
+        let agents = store.snapshot().unwrap().agents;
+        let ids: Vec<&str> = agents.iter().map(|a| a.session_id.as_str()).collect();
+        assert_eq!(ids.len(), 2, "only roots are listed, got {ids:?}");
+
+        let root = agents.iter().find(|a| a.session_id == "root").unwrap();
+        assert_eq!(root.tok_total, 200, "root carries 100 + 10 + 20 + 30 + 40");
+        assert_eq!(root.kids, 3, "kid-a, kid-b, grandkid are live; kid-c ended");
+
+        let solo = agents.iter().find(|a| a.session_id == "solo").unwrap();
+        assert_eq!(solo.tok_total, 7);
+        assert_eq!(solo.kids, 0, "a session running alone says so");
 
         let _ = std::fs::remove_file(&path);
     }

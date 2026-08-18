@@ -235,6 +235,18 @@ html, body {
   color: var(--muted);
 }
 .proj, .ttl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Only present while a session has children running, so it may cost the title
+   some width — during a fan-out the count is the more useful of the two. */
+.fan {
+  font-size: 10px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  color: var(--blue);
+  border: 1px solid rgba(85, 168, 255, .32);
+  border-radius: 3px;
+  padding: 1px 4px;
+  margin-right: 6px;
+}
 .age, .tok {
   font-size: 13px;
   text-align: right;

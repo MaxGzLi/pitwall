@@ -18,6 +18,8 @@ Click any summary to see what that agent actually did:
 
 - **Live agent list** — harness, project, title, state, age, tokens. States are
   animated, so "still working" and "stopped an hour ago" are different at a glance.
+  Subagents fold into the session that spawned them: one row per thing you started,
+  marked `11 sub` while eleven of them are running, and carrying their tokens.
 - **Quota** — Claude 5h / 7d, Codex weekly, DeepSeek balance, in one column. Bars
   fill as quota is consumed; a row whose source has gone stale says how old it is
   instead of pretending to count down.
