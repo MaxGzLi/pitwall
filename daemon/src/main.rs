@@ -10,6 +10,7 @@ mod api;
 mod config;
 mod herdr;
 mod model;
+mod notice;
 mod pricing;
 mod quota;
 mod redact;
@@ -24,6 +25,7 @@ use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 
 use crate::config::Config;
+use crate::notice::Notice;
 use crate::store::Store;
 
 /// Fired whenever something changed, so the strip's SSE stream can wake up.
@@ -43,10 +45,24 @@ async fn main() -> Result<()> {
     let store = Arc::new(Store::open(&cfg.db_path())?);
     info!(db = %cfg.db_path().display(), port = cfg.port, "agent-monitord starting");
 
-    if store.price_count()? == 0 {
+    // Say which file was obeyed, and why one was not, so "I changed the setting
+    // and nothing happened" is answerable without reading the source.
+    match (&cfg.config_file, &cfg.config_error) {
+        (_, Some(problem)) => warn!(problem, "config file ignored; running on defaults"),
+        (Some(path), None) => info!(config = %path.display(), "config loaded"),
+        (None, None) => match config::write_template_if_absent(&cfg) {
+            Ok(true) => info!(config = %cfg.config_path().display(), "wrote a commented config template"),
+            Ok(false) => {}
+            Err(e) => warn!(error = %e, path = %cfg.config_path().display(), "could not write the config template"),
+        },
+    }
+
+    // Only worth a line when a seed was actually configured; the usual path is
+    // to have no seed at all and be priced from the network a second later.
+    if store.price_count()? == 0 && cfg.pricing_seed.is_some() {
         match pricing::load_seed(&cfg, &store) {
             Ok(n) => info!(models = n, "seeded price table from local models.dev snapshot"),
-            Err(e) => warn!(error = %e, "no local price seed; costs stay zero until refresh"),
+            Err(e) => warn!(error = %e, "price seed unreadable; costs stay zero until refresh"),
         }
     }
 
@@ -62,6 +78,7 @@ async fn main() -> Result<()> {
 /// themselves and pile up.
 async fn collectors(cfg: Arc<Config>, store: Arc<Store>, events: Events) {
     let mut adapters = adapters::all(&cfg);
+    let mut notice = Notice::new();
 
     let mut live = tokio::time::interval(Duration::from_millis(cfg.live_poll_ms));
     let mut scan = tokio::time::interval(Duration::from_millis(cfg.scan_poll_ms));
@@ -75,9 +92,10 @@ async fn collectors(cfg: Arc<Config>, store: Arc<Store>, events: Events) {
             _ = live.tick() => {
                 let mut changed = false;
                 for adapter in adapters.iter_mut() {
+                    let name = adapter.name();
                     match adapter.poll_live(&store) {
-                        Ok(n) => changed |= n > 0,
-                        Err(e) => warn!(adapter = adapter.name(), error = %e, "live poll failed"),
+                        Ok(n) => { changed |= n > 0; notice.report((name, "live"), name, Ok(())); }
+                        Err(e) => notice.report((name, "live"), name, Err(e.to_string())),
                     }
                 }
                 if changed { let _ = events.send(()); }
@@ -85,9 +103,10 @@ async fn collectors(cfg: Arc<Config>, store: Arc<Store>, events: Events) {
             _ = scan.tick() => {
                 let mut changed = false;
                 for adapter in adapters.iter_mut() {
+                    let name = adapter.name();
                     match adapter.scan(&store) {
-                        Ok(n) => changed |= n > 0,
-                        Err(e) => warn!(adapter = adapter.name(), error = %e, "scan failed"),
+                        Ok(n) => { changed |= n > 0; notice.report((name, "scan"), name, Ok(())); }
+                        Err(e) => notice.report((name, "scan"), name, Err(e.to_string())),
                     }
                 }
                 if cfg.summarize {
@@ -100,9 +119,8 @@ async fn collectors(cfg: Arc<Config>, store: Arc<Store>, events: Events) {
                 if changed { let _ = events.send(()); }
             }
             _ = quota_tick.tick() => {
-                if let Err(e) = quota::refresh(&cfg, &store).await {
-                    warn!(error = %e, "quota refresh failed");
-                }
+                let outcome = quota::refresh(&cfg, &store).await.map_err(|e| e.to_string());
+                notice.report(("quota", "refresh"), "quota refresh", outcome);
                 let _ = events.send(());
             }
             _ = price_tick.tick() => {

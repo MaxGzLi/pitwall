@@ -12,9 +12,10 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::net::UnixStream;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::config::Config;
+use crate::notice::Notice;
 use crate::model::{now_ms, Harness, PaneRow, SessionUpdate, State};
 use crate::store::Store;
 use crate::Events;
@@ -39,25 +40,25 @@ const IDLE_DEBOUNCE: Duration = Duration::from_millis(2500);
 const TICK: Duration = Duration::from_millis(250);
 
 pub async fn run(cfg: Arc<Config>, store: Arc<Store>, events: Events) {
-    let sock = cfg.herdr_socket();
+    let sock = cfg.herdr_socket.clone();
     let mut tracker = Tracker::default();
     let mut backoff = Duration::from_millis(500);
-    let mut attempt: u64 = 0;
+    // herdr is optional. On a machine that does not run it the socket is absent
+    // forever, and the retry loop must not narrate that twice a minute for as
+    // long as the daemon is up.
+    let mut notice = Notice::new();
 
     loop {
-        attempt += 1;
-        if attempt > 1 {
-            info!(socket = %sock.display(), panes = tracker.panes.len(), "herdr: connecting");
-        }
         match session(&sock, &store, &events, &mut tracker).await {
             // Ok means "resubscribe now": the pane set moved, or the server hung
             // up. The short pause only stops a pane-churn storm from spinning.
             Ok(()) => {
+                notice.report(("herdr", "stream"), "herdr", Ok(()));
                 backoff = Duration::from_millis(500);
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(e) => {
-                warn!(error = %e, retry_ms = backoff.as_millis(), "herdr: stream lost");
+                notice.report(("herdr", "stream"), "herdr", Err(e.to_string()));
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }

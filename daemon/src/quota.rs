@@ -192,7 +192,7 @@ fn claude_dotjson(cfg: &Config, rows: &mut Vec<QuotaRow>) {
 /// Codex has no quota cache; the numbers only exist inside the rollout it wrote
 /// them into, and they freeze as soon as the session stops taking turns.
 fn codex(cfg: &Config, rows: &mut Vec<QuotaRow>) {
-    let dir = cfg.codex_home().join("sessions");
+    let dir = cfg.codex_home.join("sessions");
     for path in newest_rollouts(&dir, ROLLOUT_CANDIDATES) {
         let Some(record) = last_token_count(&path) else { continue };
         let Some(limits) = record.pointer("/payload/rate_limits") else { continue };

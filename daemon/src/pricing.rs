@@ -1,7 +1,7 @@
 //! USD per 1M tokens, from models.dev.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -15,30 +15,14 @@ use crate::store::{Price, Store};
 /// markup (and a few with a flat 0). Prefer the vendor the tokens are billed by.
 const FIRST_PARTY: &[&str] = &["anthropic", "openai", "deepseek", "zhipuai"];
 
-/// The models this machine actually runs. A missing one prices its tokens at 0,
-/// which looks exactly like a free model, so say which ones are missing.
-const WATCHED: &[&str] = &[
-    "claude-opus-5",
-    "claude-opus-5[1m]",
-    "opus[1m]",
-    "claude-fable-5",
-    "claude-sonnet-5",
-    "gpt-5.6-sol",
-    "gpt-5.6-terra",
-    "gpt-5.6-luna",
-    "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5.3-codex-spark",
-    "codex-auto-review",
-    "deepseek-v4-flash",
-    "glm-4.6v",
-];
-
+/// Prices the table from a local models.dev snapshot, if one is configured.
+/// There is no default location: the network is the normal path and our own
+/// cache covers every restart after the first, so a machine with neither simply
+/// starts with no prices and fills them in seconds later.
 pub fn load_seed(cfg: &Config, store: &Store) -> Result<usize> {
-    let path = cfg.pricing_seed();
+    let Some(path) = &cfg.pricing_seed else { return Ok(0) };
     let text =
-        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     ingest(&text, store)
 }
 
@@ -57,7 +41,7 @@ pub async fn refresh(cfg: &Config, store: &Store) -> Result<usize> {
     }
     // A stale price beats no price, and a price refresh must never take the daemon
     // down: fall back to our own cached copy, then to the seed, then give up quietly.
-    for path in [cfg.pricing_cache(), cfg.pricing_seed()] {
+    for path in [Some(cfg.pricing_cache()), cfg.pricing_seed.clone()].into_iter().flatten() {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
@@ -87,7 +71,7 @@ async fn fetch(cfg: &Config) -> Result<String> {
 
 fn ingest(text: &str, store: &Store) -> Result<usize> {
     let table = parse(text)?;
-    report_gaps(&table);
+    report_gaps(&table, store);
     let rows: Vec<(String, Price)> = table.into_iter().map(|(id, e)| (id, e.price)).collect();
     store.put_prices(&rows)
 }
@@ -182,23 +166,41 @@ fn usd(cost: &Value, key: &str) -> f64 {
     cost.get(key).and_then(Value::as_f64).unwrap_or(0.0)
 }
 
-static REPORTED: AtomicBool = AtomicBool::new(false);
+/// The last gap list that was logged, so a refresh every six hours does not
+/// repeat a report nothing has changed about.
+static REPORTED: Mutex<Option<Vec<String>>> = Mutex::new(None);
 
-fn report_gaps(table: &HashMap<String, Entry>) {
-    if REPORTED.swap(true, Ordering::Relaxed) {
+/// An unpriced model bills its tokens at 0, which on the panel is
+/// indistinguishable from a free one, so the gaps are worth a line.
+///
+/// The list of models to check comes from what this machine has actually logged
+/// tokens against. It used to be a constant, which meant the report named the
+/// author's models on everybody else's machine.
+fn report_gaps(table: &HashMap<String, Entry>, store: &Store) {
+    let seen = match store.models_seen(RECENT_DAYS) {
+        Ok(seen) => seen,
+        Err(e) => {
+            warn!(error = %e, "could not list the models this machine runs");
+            return;
+        }
+    };
+    let missing: Vec<String> = seen.into_iter().filter(|m| !priced(table, m)).collect();
+    let mut last = REPORTED.lock().unwrap_or_else(|e| e.into_inner());
+    if last.as_ref() == Some(&missing) {
         return;
     }
-    let missing: Vec<&str> = WATCHED
-        .iter()
-        .copied()
-        .filter(|m| !priced(table, m))
-        .collect();
     if missing.is_empty() {
         info!(models = table.len(), "every model this machine runs has a price");
     } else {
         info!(models = table.len(), unpriced = ?missing, "no price for these models; their tokens cost 0");
     }
+    *last = Some(missing);
 }
+
+/// How far back to look for models in use. Long enough to cover a machine that
+/// was idle over a weekend, short enough that a model dropped months ago stops
+/// being reported as a gap.
+const RECENT_DAYS: i64 = 30;
 
 /// Same decoration-stripping as `store::price_for`, so this reports what the
 /// daemon will actually resolve rather than what the table literally contains.
@@ -240,37 +242,56 @@ mod tests {
         Price::default()
     }
 
+    /// Machine-specific by design, and skipped where it cannot apply: given a
+    /// local models.dev snapshot, is every model this machine has actually run
+    /// in the last month priced? An unpriced one silently costs 0.
+    ///
+    /// The model list is read from the live store rather than hardcoded, so this
+    /// keeps working as the models change and reports nothing on a machine that
+    /// has not run any.
     #[test]
-    fn seed_prices_every_model_this_machine_runs() {
+    fn the_local_snapshot_prices_the_models_this_machine_runs() {
         let cfg = Config::load().unwrap();
-        if !cfg.pricing_seed().exists() {
-            eprintln!("no seed at {}, skipping", cfg.pricing_seed().display());
+        let snapshot = [cfg.pricing_seed.clone(), Some(cfg.pricing_cache())]
+            .into_iter()
+            .flatten()
+            .find(|p| p.exists());
+        let Some(snapshot) = snapshot else {
+            eprintln!("no local models.dev snapshot, skipping");
+            return;
+        };
+        let live = Store::open(&cfg.db_path()).unwrap();
+        let models = live.models_seen(30).unwrap();
+        if models.is_empty() {
+            eprintln!("no models logged on this machine, skipping");
             return;
         }
+
         let dir = std::env::temp_dir().join(format!("agent-monitor-pricing-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let db = dir.join("prices.sqlite");
         let store = Store::open(&db).unwrap();
-
-        let n = load_seed(&cfg, &store).unwrap();
-        assert!(n > 1000, "only {n} models in the seed");
+        let n = ingest(&std::fs::read_to_string(&snapshot).unwrap(), &store).unwrap();
+        assert!(n > 1000, "only {n} models in {}", snapshot.display());
 
         let conn = Connection::open(&db).unwrap();
         let mut unpriced = Vec::new();
-        for model in WATCHED {
+        for model in &models {
             let p = lookup(&conn, model);
             println!(
-                "{model:<20} in={:<8} out={:<8} cache_read={:<8} cache_write={}",
+                "{model:<24} in={:<8} out={:<8} cache_read={:<8} cache_write={}",
                 p.input, p.output, p.cache_read, p.cache_write
             );
             if p.input == 0.0 && p.output == 0.0 {
-                unpriced.push(*model);
+                unpriced.push(model.clone());
             }
         }
-        // codex-auto-review is a Codex-internal model; models.dev has never listed it.
-        assert_eq!(unpriced, vec!["codex-auto-review"]);
-
         let _ = std::fs::remove_dir_all(&dir);
+
+        // codex-auto-review is a Codex-internal model; models.dev has never
+        // listed it, and it is the only gap this machine is known to have.
+        unpriced.retain(|m| m != "codex-auto-review");
+        assert!(unpriced.is_empty(), "unpriced models in use: {unpriced:?}");
     }
 
     #[test]

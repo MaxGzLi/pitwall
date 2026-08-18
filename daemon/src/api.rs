@@ -6,7 +6,6 @@
 
 use std::convert::Infallible;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,7 +42,7 @@ struct Api {
 }
 
 pub async fn serve(cfg: Arc<Config>, store: Arc<Store>, events: Events) -> Result<()> {
-    let web_dir = web_dir();
+    let web_dir = cfg.web_dir.clone();
     if !web_dir.join("index.html").is_file() {
         warn!(dir = %web_dir.display(), "strip UI not found; API still served");
     }
@@ -105,13 +104,6 @@ async fn shutdown_signal() {
         _ = ctrl_c => info!("interrupted; shutting down"),
         _ = terminate => info!("terminated; shutting down"),
     }
-}
-
-/// The strip UI lives beside the daemon in the repo; no config knob for it.
-fn web_dir() -> PathBuf {
-    std::env::var_os("AGENT_MONITOR_WEB_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../web")))
 }
 
 // -- handlers -----------------------------------------------------------
