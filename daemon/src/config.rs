@@ -61,6 +61,18 @@ pub struct Config {
     /// refresh succeeds. There is no default: the network is the normal path and
     /// the daemon's own cache covers every restart after the first.
     pub pricing_seed: Option<PathBuf>,
+
+    // --- handing finished work to the DSH brain ------------------------
+    /// Send each finished session's summary to the DSH brain's local capture
+    /// API. On by default, but inert without a capture token: a machine that
+    /// does not run the brain never notices this exists.
+    pub brain_capture: bool,
+    /// Where that API listens. Loopback; the brain's own default port.
+    pub brain_url: String,
+    /// File holding `DSH_BRAIN_HTTP_CAPTURE_TOKEN`. This is the one credential
+    /// file the daemon opens, and only to authenticate to a server on this
+    /// machine. The value is never logged and never leaves loopback.
+    pub brain_token_file: PathBuf,
 }
 
 /// The on-disk form. Every field is optional -- a config file is a set of
@@ -85,6 +97,9 @@ struct FileConfig {
     herdr_socket: Option<String>,
     web_dir: Option<String>,
     pricing_seed: Option<String>,
+    brain_capture: Option<bool>,
+    brain_url: Option<String>,
+    brain_token_file: Option<String>,
 }
 
 impl Config {
@@ -155,6 +170,16 @@ impl Config {
             pricing_seed: std::env::var_os("AGENT_MONITOR_PRICING_SEED")
                 .map(PathBuf::from)
                 .or_else(|| file.pricing_seed.as_deref().map(|raw| expand(&home, raw))),
+            brain_capture: env_bool("AGENT_MONITOR_BRAIN_CAPTURE", file.brain_capture.unwrap_or(true)),
+            brain_url: env_str(
+                "AGENT_MONITOR_BRAIN_URL",
+                file.brain_url.as_deref().unwrap_or("http://127.0.0.1:43128"),
+            ),
+            brain_token_file: path_of(
+                "AGENT_MONITOR_BRAIN_TOKEN_FILE",
+                &file.brain_token_file,
+                dsh_home.join("brain-http.env"),
+            ),
             claude_home,
             codex_home,
             dsh_home,
@@ -296,6 +321,15 @@ const TEMPLATE: &str = r#"# agent-monitord settings. Every line is optional and 
 # but the key, and chmod 600 it.
 # deepseek_key_file = "~/.agent-monitor/deepseek.key"
 
+# --- handing finished work to the DSH brain ---------------------------
+# When a session ends and its summary is written, the same summary is offered
+# to the DSH brain's local capture API, where it lands in the inbox for you to
+# keep or discard. Nothing is sent without a capture token, so a machine that
+# does not run the brain never notices this setting.
+# brain_capture    = true
+# brain_url        = "http://127.0.0.1:43128"
+# brain_token_file = "~/.dsh/brain-http.env"
+
 # --- rarely needed ----------------------------------------------------
 # web_dir      = "..."   # the panel's static files; found automatically
 # pricing_seed = "..."   # a models.dev snapshot to price from before the
@@ -360,6 +394,18 @@ pub fn read_secret(path: &Path, key: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// The DSH brain's capture-scoped token: environment first, then the file the
+/// brain writes it to. Absent means the brain is not running here, which is the
+/// normal case on a machine without DSH -- the caller sends nothing at all.
+pub fn brain_token(cfg: &Config) -> Option<String> {
+    if let Ok(v) = std::env::var("DSH_BRAIN_HTTP_CAPTURE_TOKEN") {
+        if !v.is_empty() {
+            return Some(v);
+        }
+    }
+    read_secret(&cfg.brain_token_file, "DSH_BRAIN_HTTP_CAPTURE_TOKEN")
 }
 
 /// DeepSeek key: environment, then the file named in the config, then the two

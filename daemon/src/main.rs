@@ -7,6 +7,7 @@
 
 mod adapters;
 mod api;
+mod brain;
 mod config;
 mod herdr;
 mod model;
@@ -66,6 +67,13 @@ async fn main() -> Result<()> {
         }
     }
 
+    // A channel that quietly does nothing because a token is missing looks
+    // exactly like one that is broken, so it says which it is on every start.
+    info!(brain = %brain::describe(&cfg), "DSH brain channel");
+    if let Err(e) = brain::health(&cfg).await {
+        warn!(error = %e, url = %cfg.brain_url, "the brain has a token here but is not answering");
+    }
+
     let (events, _) = broadcast::channel::<()>(64);
 
     tokio::spawn(herdr::run(cfg.clone(), store.clone(), events.clone()));
@@ -116,6 +124,15 @@ async fn collectors(cfg: Arc<Config>, store: Arc<Store>, events: Events) {
                         Err(e) => warn!(error = %e, "summariser failed"),
                     }
                 }
+                // After the summaries exist, not before: the brain is offered
+                // the same text the panel shows, so there is nothing to send
+                // until the summariser has written it.
+                let filed = brain::run_once(&cfg, &store).await;
+                notice.report(
+                    ("brain", "capture"),
+                    "the DSH brain",
+                    filed.as_ref().map(|_| ()).map_err(|e| e.to_string()),
+                );
                 if changed { let _ = events.send(()); }
             }
             _ = quota_tick.tick() => {
