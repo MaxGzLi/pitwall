@@ -188,8 +188,13 @@ function renderAgents(all) {
     row.appendChild(stateBadge(state));
     row.appendChild(el('span', 'tag', a.harness || ''));
     row.appendChild(el('span', 'proj', a.project || '—'));
-    const t = el('span', 'ttl', a.title || '');
-    t.title = a.title || '';
+    // Subagents are folded into this row, so the row has to say so: without it
+    // a session fanning out to a dozen helpers looks identical to one thinking
+    // by itself, and its token number would jump for no visible reason.
+    const t = el('span', 'ttl');
+    if (a.kids > 0) t.appendChild(el('i', 'fan', a.kids + ' sub'));
+    t.appendChild(document.createTextNode(a.title || ''));
+    t.title = (a.kids > 0 ? a.kids + ' subagents running · ' : '') + (a.title || '');
     row.appendChild(t);
     const age = el('span', 'age');
     age.dataset.since = a.started_at_ms;

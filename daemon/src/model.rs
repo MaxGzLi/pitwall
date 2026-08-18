@@ -206,6 +206,8 @@ pub struct AgentRow {
     pub turns: i64,
     pub pane_id: Option<String>,
     pub herdr_status: Option<String>,
+    /// Live descendants folded into this row. 0 for a session running alone.
+    pub kids: i64,
 }
 
 /// A finished session, with everything the brain needs to file it: the summary
