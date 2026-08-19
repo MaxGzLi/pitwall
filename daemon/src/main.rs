@@ -78,8 +78,37 @@ async fn main() -> Result<()> {
 
     tokio::spawn(herdr::run(cfg.clone(), store.clone(), events.clone()));
     tokio::spawn(collectors(cfg.clone(), store.clone(), events.clone()));
+    tokio::spawn(heartbeat());
 
     api::serve(cfg, store, events).await
+}
+
+/// A pulse, so the log can be read backwards from a wedge.
+///
+/// This daemon once sat at 100% CPU with every HTTP request timing out and nine
+/// of ten runtime workers parked -- and the only evidence it left behind was a
+/// screenshot of Activity Monitor. A line every ten minutes costs nothing and
+/// dates the next one: whatever stops the runtime stops the pulse, and the last
+/// line says when. `late` is how far behind the wake-up was, which separates
+/// "the machine was asleep" from "the timer wheel went wrong".
+async fn heartbeat() {
+    const PERIOD: Duration = Duration::from_secs(600);
+    /// Sleeping through a laptop lid is normal and not worth a warning.
+    const SLEPT: Duration = Duration::from_secs(120);
+
+    let started = tokio::time::Instant::now();
+    let mut due = started;
+    loop {
+        due += PERIOD;
+        tokio::time::sleep_until(due).await;
+        let late = due.elapsed();
+        let up = started.elapsed().as_secs();
+        if late > SLEPT {
+            warn!(late_s = late.as_secs(), up_s = up, "woke up late; the machine slept, or the runtime stalled");
+        } else {
+            info!(late_ms = late.as_millis(), up_s = up, "alive");
+        }
+    }
 }
 
 /// Everything that runs on a timer. One task, so the intervals can never overlap
@@ -92,8 +121,14 @@ async fn collectors(cfg: Arc<Config>, store: Arc<Store>, events: Events) {
     let mut scan = tokio::time::interval(Duration::from_millis(cfg.scan_poll_ms));
     let mut quota_tick = tokio::time::interval(Duration::from_millis(cfg.quota_poll_ms));
     let mut price_tick = tokio::time::interval(Duration::from_secs(6 * 3600));
-    live.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    scan.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Every one of them, not just the two that poll fastest. This runs on a
+    // laptop that sleeps: after eight hours shut, tokio's default behaviour is
+    // to hand out every tick that was missed, back to back -- eight hours of
+    // quota refreshes with no pause between them. One catch-up is the whole
+    // point; the rest is a thundering herd against somebody's API.
+    for t in [&mut live, &mut scan, &mut quota_tick, &mut price_tick] {
+        t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    }
 
     loop {
         tokio::select! {
