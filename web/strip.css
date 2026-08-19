@@ -62,19 +62,19 @@ html, body {
   grid-template-rows: minmax(0, 1.15fr) minmax(0, 1fr);
   grid-template-areas:
     "agents agents agents"
-    "quota  today  summaries";
+    "quota  today  usage";
 }
 .r-agents    { grid-area: agents; }
 .r-quota     { grid-area: quota; }
 .r-today     { grid-area: today; }
-.r-summaries { grid-area: summaries; }
+.r-usage     { grid-area: usage; }
 
 /* Narrow: one column, agents still the tallest. */
 @media (max-width: 760px) {
   #strip {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 1.4fr) auto auto minmax(0, 1fr);
-    grid-template-areas: "agents" "quota" "today" "summaries";
+    grid-template-areas: "agents" "quota" "today" "usage";
   }
 }
 
@@ -84,7 +84,7 @@ html, body {
   #strip {
     grid-template-columns: minmax(0, 1fr) 200px 132px 176px;
     grid-template-rows: minmax(0, 1fr);
-    grid-template-areas: "agents quota today summaries";
+    grid-template-areas: "agents quota today usage";
   }
 }
 /* below this the four cards start starving each other; drop them by usefulness */
@@ -93,7 +93,7 @@ html, body {
     grid-template-columns: minmax(0, 1fr) 200px 132px;
     grid-template-areas: "agents quota today";
   }
-  .r-summaries { display: none; }
+  .r-usage { display: none; }
 }
 @media (max-height: 215px) and (max-width: 680px) {
   #strip {
@@ -131,20 +131,9 @@ html, body {
 .more { font-size: 10px; color: var(--muted); }
 
 .hgroup { display: flex; align-items: center; gap: 7px; }
-/* The way to the other summaries. It reads as a control rather than a label
-   because the card holds three of twenty-four and nothing else says so. */
-.all {
-  font: inherit;
-  font-size: 10px;
-  letter-spacing: .04em;
-  color: var(--blue);
-  background: none;
-  border: 1px solid rgba(85, 168, 255, .32);
-  border-radius: 3px;
-  padding: 1px 5px;
-  cursor: pointer;
-}
-.all:hover { background: rgba(85, 168, 255, .12); }
+/* The 24h total sits in the header rather than under the bars: it is what the
+   card is about, and the space under them is spoken for by the clock. */
+.u-total { font-size: 12px; color: var(--fg2); }
 
 .rows {
   flex: 1;
@@ -429,50 +418,86 @@ html, body {
   .t-total .v { font-size: 17px; }
   .t-cost { font-size: 10px; }
 }
+/* --- 24h spend ------------------------------------------------------ */
 
-/* --- summaries ---------------------------------------------------- */
-
-.sum {
-  flex: none;
-  padding: 2px 7px;
-  border-left: 2px solid var(--rule);
-  border-radius: 3px;
-  cursor: pointer;
+/* Bars, the clock under them, and one line comparing the hour in progress to
+   yesterday. The bars take whatever height is left after the other two, so the
+   card survives being dragged from 160px tall down to a strip. */
+.usage {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  gap: 4px;
 }
-.sum:hover { background: var(--card-hi); }
-.sum .meta {
+
+.u-bars {
+  min-height: 0;
   display: flex;
-  justify-content: space-between;
-  font-size: 10px;
-  color: var(--dim);
-  line-height: 13px;
+  align-items: stretch;
+  gap: 2px;
 }
-.sum .head {
-  font-size: 13px;
-  color: var(--fg2);
-  line-height: 17px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* Every hour keeps its slot, spent or not. The track is what makes a sleeping
+   machine read as a gap rather than as an hour that never existed. */
+.u-bar {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  border-radius: 2px;
+  background: var(--track);
 }
-.sum .body {
-  font-size: 11px;
-  line-height: 15px;
-  color: var(--dim);
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+.u-bar i {
+  position: absolute;
+  inset: auto 0 0;
+  border-radius: 2px;
+  background: var(--blue);
+  opacity: .55;
 }
-/* only when the card is tall enough to afford it — set in strip.js */
-.rows:not(.rich) .sum .body { display: none; }
+/* The hour in progress is short because it is not over, not because it was
+   quiet. Full colour says "this one is still filling". */
+.u-bar.now i { opacity: 1; }
 
-/* The one card whose content is unbounded: summaries keep arriving and the
-   window is 350px tall. It scrolls; everything else still truncates by count. */
-#summaries { overflow-y: auto; overscroll-behavior: contain; }
-#summaries::-webkit-scrollbar { width: 5px; }
-#summaries::-webkit-scrollbar-thumb { background: var(--track); border-radius: 3px; }
-#summaries::-webkit-scrollbar-thumb:hover { background: var(--rule); }
+.u-axis {
+  display: flex;
+  gap: 2px;
+  font-size: 9px;
+  line-height: 10px;
+  color: var(--dim);
+}
+.u-axis span {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+}
+
+.u-foot {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 10px;
+  color: var(--muted);
+  border-top: 1px solid var(--rule);
+  padding-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.u-vs { color: var(--dim); }
+.u-d { margin-left: auto; }
+.u-d.up { color: var(--amber); }
+.u-d.down { color: var(--green); }
+
+/* In a strip the card is ~176px wide: the bars become a sparkline, and hour
+   labels under 6px columns would be unreadable before they were useful. */
+@media (max-height: 215px) {
+  .u-bars { gap: 1px; }
+  .u-axis { display: none; }
+  .u-total { font-size: 11px; }
+  .u-foot { font-size: 9px; gap: 5px; padding-top: 3px; }
+  /* Both figures do not fit, and the one that gets cut is the delta -- the only
+     part that is a conclusion rather than an input. Yesterday's number goes to
+     the tooltip and the arrow stays. */
+  .u-vs { display: none; }
+}
 
 .conn {
   width: 7px;
@@ -484,212 +509,3 @@ html, body {
 .conn.live  { background: var(--green); }
 .conn.poll  { background: var(--amber); }
 .conn.down  { background: var(--red); }
-
-/* --- overlay ------------------------------------------------------ */
-
-/* A centred card, not a full-bleed sheet: a four-line summary stretched over a
-   700px-tall window is mostly void. Clicking the backdrop closes too, so the
-   button is no longer the only way out. */
-.overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 10;
-  /* opaque: at 98.5% alpha the strip underneath was still plainly legible */
-  background: #080a0d;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  /* the top pad keeps the card clear of the 26pt native drag band */
-  padding: 34px 16px 16px;
-}
-.overlay[hidden] { display: none; }
-
-.ov-card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  max-width: 700px;
-  max-height: 100%;
-  padding: 13px 15px 11px;
-  border: 1px solid #212a34;
-  border-radius: 9px;
-  background: var(--card);
-  box-shadow: 0 14px 40px rgba(0, 0, 0, .55);
-}
-
-#ov-close {
-  position: absolute;
-  top: 9px;
-  right: 9px;
-  width: 26px;
-  height: 26px;
-  font: inherit;
-  font-size: 13px;
-  line-height: 1;
-  color: var(--muted);
-  background: #161c24;
-  border: 1px solid #262e39;
-  border-radius: 5px;
-  cursor: pointer;
-}
-#ov-close:hover { color: var(--fg); background: #1e262f; }
-
-.ov-head { flex: none; padding-right: 34px; }
-.ov-who {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 10px;
-  line-height: 14px;
-}
-.ov-tag {
-  font-weight: 700;
-  letter-spacing: .1em;
-  text-transform: uppercase;
-  color: var(--dim);
-}
-.ov-proj { font-size: 13px; font-weight: 600; color: var(--fg); }
-.ov-time { color: var(--dim); }
-.ov-title {
-  margin-top: 3px;
-  font-size: 15px;
-  font-weight: 600;
-  line-height: 1.35;
-  color: var(--fg);
-}
-
-.ov-body {
-  /* auto height, not flex:1 — the card hugs its content and only scrolls once
-     max-height caps it */
-  flex: 0 1 auto;
-  min-height: 0;
-  margin-top: 10px;
-  overflow-y: auto;
-  user-select: text;
-}
-
-/* One labelled paragraph per fact. The chip carries the question, the sentence
-   answers it — which is the whole point of reading this at a glance. */
-.f {
-  display: grid;
-  grid-template-columns: 62px minmax(0, 1fr);
-  gap: 9px;
-  align-items: start;
-  padding: 5px 0;
-  border-top: 1px solid var(--rule);
-}
-.f:first-child { border-top: 0; padding-top: 0; }
-.f-k {
-  font-size: 10px;
-  line-height: 18px;
-  text-align: center;
-  border-radius: 3px;
-  color: var(--muted);
-  background: #161c24;
-}
-.f-v {
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--fg2);
-}
-.f-todo  .f-k { color: var(--amber); background: rgba(240, 180, 41, .13); }
-.f-todo  .f-v { color: #f3dcae; }
-.f-issue .f-k { color: var(--red);   background: rgba(255, 90, 95, .15); }
-.f-issue .f-v { color: #ffd6d7; }
-.f-done  .f-k { color: var(--green); background: rgba(61, 220, 132, .12); }
-
-/* fallback for summaries written before the labelled format */
-.f-plain { font-size: 13px; line-height: 1.6; color: var(--fg2); padding: 3px 0; }
-
-.ov-meta {
-  flex: none;
-  margin-top: 8px;
-  padding-top: 7px;
-  border-top: 1px solid var(--rule);
-  font-size: 10px;
-  color: var(--dim);
-  user-select: text;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* --- the full summary list ------------------------------------------ */
-
-/* Under the detail card, which is z-index 10: opening a summary from here
-   layers on top instead of replacing what you were reading. */
-.list { z-index: 9; align-items: stretch; padding: 0; }
-
-.ls-card {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  min-height: 0;
-  padding: 8px 12px 10px;
-  /* Clears the 26px native drag band at the top of the window, the same reason
-     the detail card's close button does. */
-  padding-top: 30px;
-}
-
-.ls-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: none;
-  padding-bottom: 7px;
-  border-bottom: 1px solid var(--rule);
-}
-.ls-title {
-  font-size: 10px;
-  letter-spacing: .12em;
-  text-transform: uppercase;
-  color: var(--dim);
-}
-.ls-filters { display: flex; gap: 4px; }
-.chip {
-  font: inherit;
-  font-size: 10px;
-  letter-spacing: .04em;
-  color: var(--muted);
-  background: none;
-  border: 1px solid var(--rule);
-  border-radius: 3px;
-  padding: 1px 6px;
-  cursor: pointer;
-}
-.chip:hover { color: var(--fg2); }
-.chip.on { color: var(--blue); border-color: rgba(85, 168, 255, .45); }
-.ls-count { margin-left: auto; font-size: 10px; color: var(--dim); }
-#ls-close {
-  font: inherit;
-  font-size: 12px;
-  line-height: 1;
-  color: var(--muted);
-  background: none;
-  border: 1px solid var(--rule);
-  border-radius: 4px;
-  padding: 3px 6px;
-  cursor: pointer;
-}
-#ls-close:hover { color: var(--fg); border-color: var(--fg2); }
-
-/* Two columns where the window is wide: at 1080px a one-column list of 40px
-   rows shows six of two hundred, which is barely better than the card. */
-.ls-rows {
-  flex: 1;
-  min-height: 0;
-  margin-top: 7px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  grid-auto-rows: min-content;
-  gap: 6px 10px;
-  align-content: start;
-}
-.ls-rows::-webkit-scrollbar { width: 6px; }
-.ls-rows::-webkit-scrollbar-thumb { background: var(--track); border-radius: 3px; }
-.ls-rows .sum { padding: 5px 7px; border-radius: 5px; background: var(--card); }
-.ls-rows .sum:hover { background: var(--card-hi); }
-.ls-rows .sum .body { display: block; }

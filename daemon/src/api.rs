@@ -54,6 +54,7 @@ pub async fn serve(cfg: Arc<Config>, store: Arc<Store>, events: Events) -> Resul
         .route("/api/stream", get(stream))
         .route("/api/sessions", get(sessions))
         .route("/api/summaries", get(summaries))
+        .route("/api/usage/hourly", get(usage_hourly))
         .route("/api/summary/{harness}/{session_id}", get(summary))
         .route("/api/health", get(health))
         .fallback_service(ServeDir::new(&web_dir).append_index_html_on_directories(true))
@@ -194,6 +195,34 @@ async fn summaries(
     let has_more = rows.len() as i64 > limit;
     rows.truncate(limit as usize);
     Ok(Json(json!({ "summaries": rows, "has_more": has_more })).into_response())
+}
+
+const HOUR_MS: i64 = 3_600_000;
+
+#[derive(Deserialize)]
+struct HourlyQuery {
+    /// How many hours back, counting the one in progress. Default 48: the panel
+    /// draws 24 and needs the day before to say whether this hour is unusual.
+    hours: Option<i64>,
+}
+
+/// Spend per hour, newest bucket last.
+///
+/// Deliberately not part of the snapshot. The snapshot goes out on every change
+/// any agent makes, and this only moves once a token is spent -- attaching two
+/// days of buckets to a stream that fires several times a minute would be a lot
+/// of bytes to say nothing.
+async fn usage_hourly(
+    State(api): State<Api>,
+    Query(q): Query<HourlyQuery>,
+) -> Result<Response, ApiError> {
+    let hours = q.hours.unwrap_or(48).clamp(1, 24 * 30);
+    // Through the end of the hour in progress, so the newest bucket is the one
+    // still filling rather than the last one that closed.
+    let to_ms = (now_ms() / HOUR_MS + 1) * HOUR_MS;
+    let from_ms = to_ms - hours * HOUR_MS;
+    let hours = api.store.hourly_usage(from_ms, to_ms)?;
+    Ok(Json(json!({ "hours": hours, "bucket_ms": HOUR_MS })).into_response())
 }
 
 async fn summary(

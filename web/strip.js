@@ -5,8 +5,14 @@ const $ = (id) => document.getElementById(id);
 /* Row heights must match strip.css; they decide how many rows each card can
    hold at the size the user dragged the window to. `gap` is the .rows gap. */
 const GAP = 3;
-const ROW = { agent: 27, quota: 26, today: 22, sum: 34, sumRich: 66 };
-const CAP = { agent: 24, quota: 10, sum: 12 };   // sanity ceiling, not a layout limit
+const ROW = { agent: 27, quota: 26, today: 22 };
+const CAP = { agent: 24, quota: 10 };            // sanity ceiling, not a layout limit
+
+const HOUR_MS = 3600 * 1000;
+/* Two days of buckets: 24 to draw, and the same hours a day earlier to say
+   whether the hour in progress is a heavy one. */
+const USAGE_HOURS = 48;
+const USAGE_SHOWN = 24;
 
 let snap = null;
 let sse = null;
@@ -14,7 +20,7 @@ let pollTimer = null;
 let retryTimer = null;
 let backoff = 1000;
 let relayout = 0;
-let sumSig = '';
+let usage = null;
 
 // --- formatting -------------------------------------------------------
 
@@ -129,36 +135,6 @@ function stateBadge(state) {
   return badge;
 }
 
-// --- summary text -----------------------------------------------------
-
-/** The summariser writes `标签：一句话` per line. Older rows are free-form
-    bullets, so an unlabelled line is kept as a plain paragraph. */
-function fields(body) {
-  const out = [];
-  for (let line of String(body || '').split('\n')) {
-    line = line.trim().replace(/^[-*•]\s*/, '');
-    if (!line) continue;
-    const m = line.match(/^([^：:]{2,8})[：:]\s*(.+)$/);
-    out.push(m ? { k: m[1], v: m[2] } : { k: null, v: line });
-  }
-  return out;
-}
-
-const FIELD_CLASS = { '待办': 'f-todo', '问题': 'f-issue', '结果': 'f-done' };
-
-function isNothing(v) { return /^(无|none|n\/a)[。.\s]*$/i.test(v); }
-
-/** One line for the card: what it did, plus the open item if there is one. */
-function preview(body) {
-  const fs = fields(body);
-  if (!fs.length) return '';
-  const did = fs.find((f) => f.k && f.k.indexOf('做') === 0) || fs[0];
-  const todo = fs.find((f) => f.k === '待办' || f.k === '问题');
-  const parts = [did.v];
-  if (todo && todo !== did && !isNothing(todo.v)) parts.push(todo.k + '：' + todo.v);
-  return parts.join('  ·  ');
-}
-
 /** How many `rowH`-tall rows fit in a card, measured, never assumed. */
 function fits(box, rowH, cap) {
   const h = box.clientHeight;
@@ -173,7 +149,6 @@ function render() {
   renderAgents(snap.agents || []);
   renderQuota(snap.quota || []);
   renderToday(snap.today || []);
-  renderSummaries(snap.summaries || []);
   tick();
 }
 
@@ -304,52 +279,99 @@ function renderToday(today) {
   box.appendChild(foot);
 }
 
-/** One summary, as a clickable row. Shared by the card and the full list. */
-function summaryRow(s, rich) {
-  const item = el('div', 'sum');
-  const meta = el('div', 'meta');
-  meta.appendChild(el('span', null, s.project || s.harness));
-  const ago = el('span');
-  ago.dataset.since = s.created_at_ms;
-  meta.appendChild(ago);
-  item.appendChild(meta);
-  const head = el('div', 'head', s.headline);
-  head.title = s.headline;
-  item.appendChild(head);
-  if (rich && s.body) {
-    const p = preview(s.body);
-    if (p) item.appendChild(el('div', 'body', p));
-  }
-  item.addEventListener('click', () => openOverlay(s));
-  return item;
+// --- 24h spend --------------------------------------------------------
+
+/**
+ * What the day cost, hour by hour.
+ *
+ * Fetched on its own timer rather than carried in the snapshot: the snapshot
+ * goes out whenever any agent so much as changes state, several times a
+ * minute, and two days of buckets riding along with that would be a lot of
+ * bytes to say nothing. An hour bucket that moves a sixtieth between polls
+ * looks identical anyway.
+ */
+function loadUsage() {
+  fetch('/api/usage/hourly?hours=' + USAGE_HOURS)
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+    .then((d) => { usage = d.hours || []; renderUsage(); })
+    .catch(() => { /* the dot already says whether the daemon is reachable */ });
 }
 
-function renderSummaries(summaries) {
-  const box = $('summaries');
-  // Show the summary body too, but only if doing so still leaves room for two.
-  // Measured before the rebuild: the card's height is set by the layout, not by
-  // what is currently inside it.
-  const rich = fits(box, ROW.sumRich, CAP.sum) >= 2;
+function renderUsage() {
+  if (!usage) return;
+  const by = new Map(usage.map((r) => [r.hour_ms, r]));
+  const now = Date.now();
+  const cur = Math.floor(now / HOUR_MS) * HOUR_MS;
 
-  // Now that the card scrolls, rebuilding it on every snapshot would throw the
-  // reader back to the top -- and snapshots arrive whenever any agent so much as
-  // changes state. Most of them do not touch this list, so leave it alone.
-  // Ages stay fresh regardless: tick() rewrites them in place.
-  const sig = rich + '|' + summaries.map((s) => s.harness + s.session_id + s.created_at_ms).join(',');
-  if (sig === sumSig) return;
-  sumSig = sig;
-
-  box.textContent = '';
-  box.classList.toggle('rich', rich);
-  if (!summaries.length) {
-    box.appendChild(el('div', 'empty', 'no recent summaries'));
-    return;
+  // Walk the clock, not the rows. The query only returns hours that saw spend,
+  // so a machine that slept comes back with holes -- and a hole is exactly what
+  // the curve should show, rather than closing up and shifting everything left.
+  const slots = [];
+  for (let i = USAGE_SHOWN - 1; i >= 0; i--) {
+    const h = cur - i * HOUR_MS;
+    const r = by.get(h);
+    slots.push({ h, cost: r ? r.cost_usd : 0, tok: r ? r.tokens : 0 });
   }
 
-  // Every one the snapshot carries, not the two that fit: the card scrolls now.
-  // Truncating here is what made everything past the second row unreachable --
-  // there was no "more" affordance and no way to scroll to it either.
-  for (const s of summaries) box.appendChild(summaryRow(s, rich));
+  const peak = slots.reduce((m, s) => Math.max(m, s.cost), 0);
+  const total = slots.reduce((a, s) => a + s.cost, 0);
+  const head = $('u-total');
+  head.textContent = fmtUsd(total);
+  head.title = '过去 24 小时估算花费 — 按 models.dev 挂牌价折算，不是账单';
+
+  const bars = $('u-bars');
+  const axis = $('u-axis');
+  bars.textContent = '';
+  axis.textContent = '';
+  for (const s of slots) {
+    const hour = new Date(s.h).getHours();
+    const bar = el('div', 'u-bar' + (s.h === cur ? ' now' : ''));
+    const fill = el('i');
+    // A floor of two percent: against a $177 peak, a $1 hour is half a pixel,
+    // and an hour that spent something must not look like one that spent nothing.
+    if (s.cost > 0) fill.style.height = Math.max(2, (s.cost / peak) * 100) + '%';
+    bar.appendChild(fill);
+    bar.title = String(hour).padStart(2, '0') + ':00  ' + fmtUsd(s.cost) +
+                (s.tok ? '  ' + fmtTok(s.tok) + ' tok' : '');
+    bars.appendChild(bar);
+    // Every sixth hour on the clock, not every sixth bar, so the labels stay
+    // where they are as the window rolls forward instead of marching left.
+    axis.appendChild(el('span', null, hour % 6 === 0 ? String(hour).padStart(2, '0') : ''));
+  }
+
+  renderUsageFoot(slots[slots.length - 1], by.get(cur - 24 * HOUR_MS), (now - cur) / HOUR_MS);
+}
+
+/**
+ * The hour in progress, against the same hour yesterday.
+ *
+ * Yesterday's hour is finished and this one is twenty minutes old, so the two
+ * numbers side by side are not a comparison. Scaling yesterday by how much of
+ * the hour has gone is the honest version: at :20 it asks whether this hour is
+ * ahead of where yesterday stood at :20. The tooltip says so, because the row
+ * has no room to. Early in the hour it says nothing at all -- at :02 the scaled
+ * figure is small enough that any ratio against it is noise.
+ */
+function renderUsageFoot(cur, prev, elapsed) {
+  const foot = $('u-foot');
+  foot.textContent = '';
+  foot.appendChild(el('span', null, '本小时 ' + fmtUsd(cur.cost)));
+
+  const yesterday = prev ? prev.cost_usd : 0;
+  if (!yesterday) {
+    foot.title = '昨天这个钟点没有花费记录';
+    foot.appendChild(el('span', 'u-vs', '昨日同时段 —'));
+    return;
+  }
+  const scaled = yesterday * elapsed;
+  foot.title = '昨日同一小时整点共 ' + fmtUsd(yesterday) + '，本小时已过 ' +
+               Math.round(elapsed * 60) + ' 分钟，按同样进度应为 ' + fmtUsd(scaled);
+  foot.appendChild(el('span', 'u-vs', '昨日同时段 ' + fmtUsd(yesterday)));
+  if (elapsed < 0.1) return;
+
+  const d = Math.round((cur.cost / scaled - 1) * 100);
+  const cls = d > 0 ? 'u-d up' : d < 0 ? 'u-d down' : 'u-d';
+  foot.appendChild(el('span', cls, (d > 0 ? '\u2191' : d < 0 ? '\u2193' : '') + Math.abs(d) + '%'));
 }
 
 /** Writes only when the text actually moved. Most of these read in minutes or
@@ -368,109 +390,6 @@ function tick() {
   for (const n of document.querySelectorAll('[data-until]')) {
     retime(n, fmtReset(Number(n.dataset.until) - now));
   }
-}
-
-// --- overlay ----------------------------------------------------------
-
-function openOverlay(s) {
-  $('ov-tag').textContent = s.harness || '';
-  $('ov-proj').textContent = s.project || '—';
-  const when = $('ov-time');
-  when.dataset.since = s.created_at_ms;
-  $('ov-title').textContent = s.headline || '';
-
-  const box = $('ov-body');
-  box.textContent = '';
-  const fs = fields(s.body);
-  if (!fs.length) {
-    box.appendChild(el('div', 'f-plain', '(没有正文)'));
-  }
-  for (const f of fs) {
-    if (!f.k) {
-      box.appendChild(el('div', 'f-plain', f.v));
-      continue;
-    }
-    const cls = FIELD_CLASS[f.k];
-    const row = el('div', 'f' + (cls ? ' ' + cls : ''));
-    row.appendChild(el('span', 'f-k', f.k));
-    row.appendChild(el('span', 'f-v', f.v));
-    box.appendChild(row);
-  }
-
-  $('ov-meta').textContent = [s.model, s.session_id].filter(Boolean).join('  ·  ');
-  $('overlay').hidden = false;
-  tick();
-}
-
-function closeOverlay() {
-  $('overlay').hidden = true;
-}
-
-// --- the full list ----------------------------------------------------
-
-const HARNESSES = ['all', 'claude', 'codex', 'dsh'];
-let list = { harness: 'all', before: null, more: false, loading: false, gen: 0 };
-
-/** Fetches one page and appends it. `reset` starts the list over, which is what
-    a filter change means.
-
-    `gen` is what makes a filter change safe while a page is still in the air: a
-    reset always goes ahead, and the page it overtook drops its rows on arrival
-    instead of pasting the old harness under the new chip. */
-function loadPage(reset) {
-  if (list.loading && !reset) return;
-  if (reset) { list.gen++; list.before = null; $('ls-rows').textContent = ''; }
-  const gen = list.gen;
-  list.loading = true;
-
-  const q = new URLSearchParams({ limit: '30' });
-  if (list.before !== null) q.set('before_ms', String(list.before));
-  if (list.harness !== 'all') q.set('harness', list.harness);
-
-  fetch('/api/summaries?' + q)
-    .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
-    .then((d) => {
-      if (gen !== list.gen) return;
-      const rows = $('ls-rows');
-      for (const s of d.summaries) {
-        rows.appendChild(summaryRow(s, true));
-        list.before = s.created_at_ms;
-      }
-      list.more = d.has_more;
-      if (!rows.childElementCount) rows.appendChild(el('div', 'empty', '这个筛选下没有总结'));
-      $('ls-count').textContent = rows.querySelectorAll('.sum').length + (d.has_more ? '+' : '');
-      list.loading = false;
-      tick();
-    })
-    .catch(() => {
-      if (gen !== list.gen) return;
-      list.loading = false;
-      $('ls-count').textContent = '读不到';
-    });
-}
-
-function openList() {
-  const bar = $('ls-filters');
-  bar.textContent = '';
-  for (const h of HARNESSES) {
-    const chip = el('button', 'chip' + (h === list.harness ? ' on' : ''), h);
-    chip.type = 'button';
-    chip.addEventListener('click', () => { list.harness = h; openList(); });
-    bar.appendChild(chip);
-  }
-  $('list').hidden = false;
-  loadPage(true);
-}
-
-function closeList() {
-  $('list').hidden = true;
-  // Emptied, not just hidden. `hidden` leaves every row in the document, and
-  // tick() finds them by selector -- a list somebody paged to two hundred rows
-  // and closed goes on being retimed once a second for as long as the panel is
-  // up. Opening it starts at page one regardless, so there is nothing to keep.
-  $('ls-rows').textContent = '';
-  list.before = null;
-  list.more = false;
 }
 
 // --- transport --------------------------------------------------------
@@ -533,29 +452,6 @@ function dropped() {
 
 // --- boot -------------------------------------------------------------
 
-$('ov-close').addEventListener('click', closeOverlay);
-// clicking the backdrop closes as well, so a missed 26px button is not a trap
-$('overlay').addEventListener('click', (e) => { if (e.target.id === 'overlay') closeOverlay(); });
-
-$('all').addEventListener('click', openList);
-$('ls-close').addEventListener('click', closeList);
-$('list').addEventListener('click', (e) => { if (e.target.id === 'list') closeList(); });
-
-// Near the bottom, fetch the next page. The window is short, so a page is only
-// a few screens and waiting for the very last pixel would read as an end.
-$('ls-rows').addEventListener('scroll', (e) => {
-  const b = e.target;
-  if (list.more && b.scrollHeight - b.scrollTop - b.clientHeight < 120) loadPage(false);
-});
-
-// Escape peels one layer at a time: the detail card opens on top of the list,
-// and closing both at once would lose the reader's place in it.
-document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape') return;
-  if (!$('overlay').hidden) closeOverlay();
-  else closeList();
-});
-
 /* The window is resizable, so row counts are only valid until the next drag.
    Coalesce to one re-render per frame — a resize drag fires continuously. */
 new ResizeObserver(() => {
@@ -564,5 +460,8 @@ new ResizeObserver(() => {
 }).observe(document.body);
 
 setInterval(tick, 1000);
+// Its own cadence: hour buckets do not move fast enough to ride the stream.
+loadUsage();
+setInterval(loadUsage, 60000);
 startPolling();
 connect();

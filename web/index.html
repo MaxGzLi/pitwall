@@ -29,49 +29,24 @@
     <div id="today" class="rows"></div>
   </section>
 
-  <section class="region r-summaries">
+  <!-- What the day actually cost, hour by hour. Replaces the summaries card:
+       pre-summarising sessions moved to the dsh-brain hooks, and this is the one
+       thing the panel knows that nothing else on screen does. -->
+  <section class="region r-usage">
     <header>
-      <span class="rlabel">summaries</span>
+      <span class="rlabel">24h</span>
       <span class="hgroup">
-        <button id="all" type="button" class="all" title="每一条总结">全部</button>
+        <span id="u-total" class="u-total"></span>
         <span id="conn" class="conn" title="connecting"></span>
       </span>
     </header>
-    <div id="summaries" class="rows"></div>
+    <div id="usage" class="usage">
+      <div id="u-bars" class="u-bars"></div>
+      <div id="u-axis" class="u-axis"></div>
+      <div id="u-foot" class="u-foot"></div>
+    </div>
   </section>
 
-</div>
-
-<!-- The close button clears the top 26px drag band and the 6px resize edge on
-     purpose: sitting in either one, it was almost impossible to hit. -->
-<div id="overlay" class="overlay" hidden>
- <div class="ov-card">
-  <button id="ov-close" type="button" title="close">&#10005;</button>
-  <div class="ov-head">
-    <div class="ov-who">
-      <span id="ov-tag" class="ov-tag"></span>
-      <span id="ov-proj" class="ov-proj"></span>
-      <span id="ov-time" class="ov-time"></span>
-    </div>
-    <div id="ov-title" class="ov-title"></div>
-  </div>
-  <div id="ov-body" class="ov-body"></div>
-  <div id="ov-meta" class="ov-meta"></div>
- </div>
-</div>
-
-<!-- Every summary there is. Sits under the detail overlay, so opening one from
-     here layers rather than replaces. -->
-<div id="list" class="overlay list" hidden>
- <div class="ls-card">
-  <div class="ls-head">
-    <span class="ls-title">summaries</span>
-    <span id="ls-filters" class="ls-filters"></span>
-    <span id="ls-count" class="ls-count"></span>
-    <button id="ls-close" type="button" title="close">&#10005;</button>
-  </div>
-  <div id="ls-rows" class="ls-rows"></div>
- </div>
 </div>
 
 <script src="strip.js"></script>

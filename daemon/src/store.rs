@@ -472,6 +472,37 @@ ORDER BY m.created_at_ms DESC LIMIT ?3
         Ok(rows)
     }
 
+    /// Spend per clock hour over a window, for the activity curve.
+    ///
+    /// Only hours that actually saw usage come back. A machine that was asleep
+    /// leaves no rows, and a gap is exactly what the curve should show, so the
+    /// panel fills the missing hours with zero rather than the query inventing
+    /// them here.
+    pub fn hourly_usage(&self, from_ms: i64, to_ms: i64) -> Result<Vec<HourUsage>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            r#"
+SELECT (at_ms / 3600000) * 3600000 AS hour_ms,
+       SUM(d_input + d_output + d_cache_read + d_cache_create + d_reasoning) AS tokens,
+       SUM(cost_usd) AS cost_usd
+FROM usage_delta
+WHERE at_ms >= ?1 AND at_ms < ?2
+GROUP BY hour_ms
+ORDER BY hour_ms
+"#,
+        )?;
+        let rows = stmt
+            .query_map(params![from_ms, to_ms], |r| {
+                Ok(HourUsage {
+                    hour_ms: r.get(0)?,
+                    tokens: r.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                    cost_usd: r.get::<_, Option<f64>>(2)?.unwrap_or(0.0),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     // -- the DSH brain --------------------------------------------------
 
     /// Finished sessions whose summary has not yet been offered to the brain.
