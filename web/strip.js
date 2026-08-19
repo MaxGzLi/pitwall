@@ -39,6 +39,13 @@ function fmtUntil(ms) {
   return Math.floor(h / 24) + 'd';
 }
 
+/** The reset column always reads forward. A bare `3h52` sitting one column away
+    from an age got read as "3h52 ago" -- twice, by the person it was built for. */
+function fmtReset(ms) {
+  const t = fmtUntil(ms);
+  return t === 'now' || t === '—' ? t : t + ' 后';
+}
+
 function fmtTok(n) {
   n = n || 0;
   if (n < 1000) return String(n);
@@ -66,22 +73,31 @@ function quotaLabel(q) {
 const STALE_MS = 6 * 3600 * 1000;
 
 /**
- * Last cell of a quota row: normally the reset countdown, but a row whose
- * source has not refreshed in hours shows how old it is instead — a countdown
- * derived from a stale sample counts down to nothing.
+ * Last cell of a quota row: when the window next resets, and nothing else.
+ *
+ * A reset time is wall clock. It does not stop being true because nobody has
+ * re-read the source, so a row can be hours stale and still know exactly when
+ * it rolls over. It stops being true once it has passed — by then the window
+ * has rolled into one this machine has never seen — and only then does the
+ * cell give up and say so. That the row is stale at all is the row's own job
+ * (`q-stale`), not this column's: one column, one meaning.
  */
 function resetCell(q, fallback) {
-  const age = q.sampled_at_ms ? Date.now() - q.sampled_at_ms : 0;
+  const now = Date.now();
+  if (q.resets_at_ms && q.resets_at_ms > now) {
+    const cell = el('span', 'q-reset');
+    cell.dataset.until = q.resets_at_ms;
+    cell.textContent = fmtReset(q.resets_at_ms - now);
+    return cell;
+  }
+  const age = q.sampled_at_ms ? now - q.sampled_at_ms : 0;
   if (age > STALE_MS) {
-    const cell = el('span', 'q-reset stale');
-    cell.dataset.stale = q.sampled_at_ms;
-    cell.textContent = fmtAge(age) + ' 前';
+    const cell = el('span', 'q-reset stale', '未更新');
     cell.title = '数据源 ' + fmtAge(age) + ' 未更新：' + (q.source || '');
     return cell;
   }
   const cell = el('span', 'q-reset');
-  if (q.resets_at_ms) cell.dataset.until = q.resets_at_ms;
-  else if (fallback !== undefined) cell.textContent = fallback;
+  if (fallback !== undefined) cell.textContent = fallback;
   return cell;
 }
 
@@ -223,9 +239,12 @@ function renderQuota(all) {
 
   for (const q of quota) {
     const row = el('div', 'q');
-    // Strip mode drops the reset column, so the row itself has to carry the
-    // staleness signal there.
-    if (q.sampled_at_ms && Date.now() - q.sampled_at_ms > STALE_MS) row.classList.add('q-stale');
+    // The reset column says when, not how old, so the row carries staleness.
+    const age = q.sampled_at_ms ? Date.now() - q.sampled_at_ms : 0;
+    if (age > STALE_MS) {
+      row.classList.add('q-stale');
+      row.title = '数据源 ' + fmtAge(age) + ' 未更新：' + (q.source || '');
+    }
     const label = el('span', 'q-label', quotaLabel(q));
     label.title = q.provider + ' ' + q.window + (q.plan ? ' (' + q.plan + ')' : '');
     row.appendChild(label);
@@ -347,10 +366,7 @@ function tick() {
     retime(n, fmtAge(now - Number(n.dataset.since)));
   }
   for (const n of document.querySelectorAll('[data-until]')) {
-    retime(n, fmtUntil(Number(n.dataset.until) - now));
-  }
-  for (const n of document.querySelectorAll('[data-stale]')) {
-    retime(n, fmtAge(now - Number(n.dataset.stale)) + ' 前');
+    retime(n, fmtReset(Number(n.dataset.until) - now));
   }
 }
 

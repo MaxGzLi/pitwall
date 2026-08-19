@@ -358,8 +358,12 @@ html, body {
   color: var(--dim);
   white-space: nowrap;
 }
-/* Age of the sample, not a countdown: this row's source has gone quiet. */
+/* Not a countdown: this row's source has gone quiet and its last known reset
+   has already passed, so there is no honest number left to print. */
 .q-reset.stale { color: var(--amber); opacity: .7; }
+/* A stale row still knows when it resets, so the reset column keeps saying so.
+   Which leaves the row itself to carry "do not trust these numbers". */
+.q.q-stale { opacity: .5; }
 .q-bal {
   grid-column: 2 / span 2;
   font-size: 12px;
@@ -375,8 +379,6 @@ html, body {
 @media (max-height: 215px) {
   .q { grid-template-columns: 76px minmax(0, 1fr) 54px; gap: 6px; }
   .q-reset { display: none; }
-  /* No room for the age here, so a stale row is faded instead of labelled. */
-  .q.q-stale { opacity: .5; }
 }
 
 /* --- today -------------------------------------------------------- */
