@@ -333,17 +333,24 @@ function renderSummaries(summaries) {
   for (const s of summaries) box.appendChild(summaryRow(s, rich));
 }
 
+/** Writes only when the text actually moved. Most of these read in minutes or
+    hours, so a once-a-second pass changes almost nothing, and an unconditional
+    assignment would dirty every one of them anyway. */
+function retime(n, text) {
+  if (n.textContent !== text) n.textContent = text;
+}
+
 /** Relative times move on their own clock, not on the server's. */
 function tick() {
   const now = Date.now();
   for (const n of document.querySelectorAll('[data-since]')) {
-    n.textContent = fmtAge(now - Number(n.dataset.since));
+    retime(n, fmtAge(now - Number(n.dataset.since)));
   }
   for (const n of document.querySelectorAll('[data-until]')) {
-    n.textContent = fmtUntil(Number(n.dataset.until) - now);
+    retime(n, fmtUntil(Number(n.dataset.until) - now));
   }
   for (const n of document.querySelectorAll('[data-stale]')) {
-    n.textContent = fmtAge(now - Number(n.dataset.stale)) + ' 前';
+    retime(n, fmtAge(now - Number(n.dataset.stale)) + ' 前');
   }
 }
 
@@ -441,6 +448,13 @@ function openList() {
 
 function closeList() {
   $('list').hidden = true;
+  // Emptied, not just hidden. `hidden` leaves every row in the document, and
+  // tick() finds them by selector -- a list somebody paged to two hundred rows
+  // and closed goes on being retimed once a second for as long as the panel is
+  // up. Opening it starts at page one regardless, so there is nothing to keep.
+  $('ls-rows').textContent = '';
+  list.before = null;
+  list.more = false;
 }
 
 // --- transport --------------------------------------------------------

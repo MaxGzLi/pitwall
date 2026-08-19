@@ -200,17 +200,24 @@ html, body {
   margin-right: 5px;
   vertical-align: -1px;
 }
+/* Full height, scaled down to the resting 2px. The equaliser used to animate
+   `height`, which relayouts and repaints the row on every frame -- on a 144Hz
+   screen, for a window that is always on top and never occluded, that was most
+   of the panel's CPU. `transform` is composited: the GPU repeats the frame and
+   nothing above it has to be measured again. */
 .ind i {
   width: 2px;
-  height: 2px;
+  height: 8px;
+  transform: scaleY(.25);
+  transform-origin: bottom;
   border-radius: 1px;
   background: currentColor;
 }
 /* still states collapse to the single dot they always were */
 .ind.dot { height: 5px; }
-.ind.dot i { width: 5px; height: 5px; border-radius: 50%; }
+.ind.dot i { width: 5px; height: 5px; border-radius: 50%; transform: none; }
 
-@keyframes eq { 0%, 100% { height: 2px } 50% { height: 8px } }
+@keyframes eq { 0%, 100% { transform: scaleY(.25) } 50% { transform: scaleY(1) } }
 .s-working .ind i { animation: eq 1.05s ease-in-out infinite; }
 .s-working .ind i:nth-child(2) { animation-delay: .19s; }
 .s-working .ind i:nth-child(3) { animation-delay: .38s; }
@@ -228,7 +235,7 @@ html, body {
 .s-done .ind i { animation: ring 1.6s ease-out 3; }
 
 @media (prefers-reduced-motion: reduce) {
-  .ind i { animation: none !important; height: 5px; }
+  .ind i { animation: none !important; height: 5px; transform: none; }
 }
 .s-working .st { background: rgba(61, 220, 132, .14);  color: var(--green); }
 .s-waiting .st { background: rgba(240, 180, 41, .15);  color: var(--amber); }
@@ -279,7 +286,8 @@ html, body {
   .ind { height: 7px; margin-right: 4px; }
   .ind.dot, .ind.dot i { height: 4px; }
   .ind.dot i { width: 4px; }
-  @keyframes eq { 0%, 100% { height: 2px } 50% { height: 7px } }
+  .ind i { height: 7px; transform: scaleY(.2857); }
+  @keyframes eq { 0%, 100% { transform: scaleY(.2857) } 50% { transform: scaleY(1) } }
 }
 
 .s-idle .proj, .s-unknown .proj, .s-ended .proj { color: var(--fg2); }
