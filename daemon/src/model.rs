@@ -251,6 +251,19 @@ pub struct DayUsage {
     pub cost_usd: f64,
 }
 
+/// One clock hour of spend, for the activity curve.
+///
+/// Bucketed on UTC hour boundaries by plain integer division, so the query
+/// carries no timezone assumption at all. Every zone this runs in is a whole
+/// number of hours off UTC, which makes those boundaries local ones too; the
+/// panel formats `hour_ms` in whatever zone the viewer is in.
+#[derive(Debug, Clone, Serialize)]
+pub struct HourUsage {
+    pub hour_ms: i64,
+    pub tokens: i64,
+    pub cost_usd: f64,
+}
+
 /// The single payload the strip UI and the DSH plugin both render.
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
